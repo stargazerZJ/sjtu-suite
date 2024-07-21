@@ -1,5 +1,6 @@
 # test direcotry
 test/
+*.cookies
 
 # IDE
 .idea/

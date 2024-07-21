@@ -1,53 +1,39 @@
 import requests
-import os
-from http.cookiejar import LWPCookieJar
 from urllib.parse import urlparse, parse_qs
 import re
 import time
 import io
 from log import get_logger
+from oauth_client import OAuthClientBase
 
 
-class JACLogin:
+def extract_auth_params(auth_url):
+    """Extract params from the authorization URL."""
+    parsed_url = urlparse(auth_url)
+    params = parse_qs(parsed_url.query)
+    return params
+
+
+class JACLogin(OAuthClientBase):
     def __init__(self, username, password, session_file="jac_login.cookies"):
         self.username = username
         self.password = password
         self.login_base_url = "https://jaccount.sjtu.edu.cn"
-        self.session = requests.Session()
-        self.session.cookies = LWPCookieJar(session_file)
-        self.logger = get_logger("JACLogin")
-        self.load_session()
-
-    def save_session(self):
-        """Save session cookies to disk."""
-        self.logger.debug("Saving session cookies to disk.")
-        self.session.cookies.save(ignore_discard=True)
-
-    def load_session(self):
-        """Load session cookies from disk."""
-        if os.path.exists(self.session.cookies.filename):
-            self.session.cookies.load(ignore_discard=True)
-            self.logger.debug("Session cookies loaded from disk.")
-        else:
-            self.logger.info("No session cookies found on disk.")
-
-    def extract_auth_params(self, auth_url):
-        """Extract params from the authorization URL."""
-        parsed_url = urlparse(auth_url)
-        params = parse_qs(parsed_url.query)
-        return params
+        super().__init__("JACLogin", session_file)
 
     def login(self, auth_url: str):
         """
         Perform the JAccount OAuth2 login flow.
-        The caller should pass the redirect location url to this method once the url belongs to domain jaccount.sjtu.edu.cn.
+        The caller should pass the redirect location url to this method
+        once the url belongs to domain jaccount.sjtu.edu.cn .
         The caller should not access the redirect location url directly.
 
         :param auth_url: The authorization URL obtained from the initial request.
         :return: The final redirect URL after successful login.
         """
         # The OAuth2 redirect flow:
-        # /oauth2/authorize -> /jaccount/jalogin -> (post to /jaccount/ulogin and refresh if not logged in) -> /oauth2/authorize -> final redirect url
+        # /oauth2/authorize -> /jaccount/jalogin -> (post to /jaccount/ulogin and refresh if not logged in)
+        # -> /oauth2/authorize -> final redirect url
 
         # Make sure the authorization URL is valid
         if not auth_url.startswith(self.login_base_url + "/oauth2/authorize"):
@@ -76,7 +62,7 @@ class JACLogin:
                 self.logger.debug(f"Login successful, redirecting to {login_page.headers['Location']}")
                 return login_page.headers["Location"]
             self.logger.debug(f"Login attempt {i + 1}/{retry_count}")
-            params = self.extract_auth_params(login_page.url)
+            params = extract_auth_params(login_page.url)
             uuid = re.search(r'uuid: "([0-9a-f-]+)"', login_page.text).group(1)
             captcha = self.get_captcha(uuid, login_page.url)
             captcha = self.solve_captcha(captcha)
@@ -120,10 +106,14 @@ class JACLogin:
             self.logger.warning(f"Captcha solving failed: {e}")
             return "error"
 
+def get_test_jac_login():
+    with open("test/password.txt") as f:
+        username = f.readline().strip()
+        password = f.readline().strip()
+    return JACLogin(username, password)
 
 if __name__ == "__main__":
     import sys
-    import getpass
     import log
     import logging
     from urllib.parse import urljoin
@@ -139,14 +129,9 @@ if __name__ == "__main__":
     # username = sys.argv[1]
     # password = getpass.getpass("Enter your password: ")
 
-    # Get username and password from test/password.txt
-    with open("test/password.txt") as f:
-        username = f.readline().strip()
-        password = f.readline().strip()
-
     logger = get_logger("LoginTest")
 
-    jac_login = JACLogin(username, password)
+    jac_login = get_test_jac_login()
     session = requests.Session()
     try:
         current_url = "https://my.sjtu.edu.cn"
