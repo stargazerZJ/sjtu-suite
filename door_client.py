@@ -38,7 +38,7 @@ class DoorClient(OAuthClientBase):
     def open_door(self, room_id: str = ""):
         """Open the door."""
         room_id = room_id or self.room_id
-        self.logger.info("Opening the door.")
+        self.logger.debug("Opening the door.")
         response = self.session.get(
             f"https://door.sjtu.edu.cn/api/key?roomid={get_truncated_room_id(room_id)}"
         )

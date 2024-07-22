@@ -47,7 +47,7 @@ class JACLogin(OAuthClientBase):
         final_redirect_response = self.session.get(auth_url, allow_redirects=False)
         final_redirect_url = final_redirect_response.headers["Location"]
         self.save_session()
-        self.logger.info("Login process completed successfully.")
+        self.logger.info(f"Logged in as {self.username}.")
         return final_redirect_url
 
     def do_login(self, login_url, retry_count=3):

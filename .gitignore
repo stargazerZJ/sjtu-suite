@@ -1,6 +1,7 @@
 # test direcotry
 test/
 *.cookies
+credentials.json
 
 # IDE
 .idea/
