@@ -57,15 +57,15 @@ def refresh_session():
         app.logger.error(f"{datetime.now()}: Scheduled session refresh failed: {e}")
 
 
-# Schedule the session refresh at 6 PM every day
+# Schedule the session refresh every hour
 scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
-scheduler.add_job(refresh_session, 'cron', hour=18, minute=0)
+scheduler.add_job(refresh_session, 'cron', minute=0)
 
 
-# Shut down the scheduler when exiting the app
-@app.teardown_appcontext
-def shutdown_scheduler(exception=None):
-    scheduler.shutdown()
+# # Shut down the scheduler when exiting the app
+# @app.teardown_appcontext
+# def shutdown_scheduler(exception=None):
+#     scheduler.shutdown()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Run Flask app with specified port.')
