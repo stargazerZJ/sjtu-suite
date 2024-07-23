@@ -47,7 +47,7 @@ class JACLogin(OAuthClientBase):
         final_redirect_response = self.session.get(auth_url, allow_redirects=False)
         final_redirect_url = final_redirect_response.headers["Location"]
         self.save_session()
-        self.logger.info(f"Logged in as {self.username}.")
+        self.logger.debug(f"Logged in as {self.username}.")
         return final_redirect_url
 
     def do_login(self, login_url, retry_count=3):
@@ -59,7 +59,8 @@ class JACLogin(OAuthClientBase):
                 "Location"
             ].startswith(self.login_base_url + "/oauth2/authorize"):
                 # login is successful
-                self.logger.debug(f"Login successful, redirecting to {login_page.headers['Location']}")
+                if i > 0:
+                    self.logger.info(f"Login session established or refreshed, user: {self.username}")
                 return login_page.headers["Location"]
             self.logger.debug(f"Login attempt {i + 1}/{retry_count}")
             params = extract_auth_params(login_page.url)
@@ -108,7 +109,7 @@ class JACLogin(OAuthClientBase):
             return "error"
 
 def get_test_jac_login():
-    with open("test/password.txt") as f:
+    with open("password.txt") as f:
         username = f.readline().strip()
         password = f.readline().strip()
     return JACLogin(username, password)

@@ -14,33 +14,33 @@ class DoorClient(OAuthClientBase):
     def __init__(self, room_id: str, session_file="door_client.cookies"):
         super().__init__("DoorClient", session_file)
         self.room_id = room_id
-        self.base_url = f"https://door.sjtu.edu.cn/ui"
+        self.base_url = f"https://door.sjtu.edu.cn"
 
     def login(self, jac_login: JACLogin):
         """Login to the door opening service."""
         self.logger.debug("Performing login.")
-        response = self.session.get(self.base_url, allow_redirects=False)
+        response = self.session.get(self.base_url + "/ui", allow_redirects=False)
         if response.status_code == 302:
             login_url = response.headers["Location"]
             self.logger.debug("Login required, performing login.")
             final_redirect_url = jac_login.login(login_url)
             # final_redirect_url = final_redirect_url.replace("http://", "https://")
-            self.session.get(final_redirect_url, allow_redirects=True)
-        response = self.session.get(self.base_url, allow_redirects=False)
-        if response.status_code == 200:
-            self.logger.info("Login successful.")
-            self.save_session()
-            return True
-        else:
-            self.logger.error("Login failed.")
-            return False
+            self.session.get(final_redirect_url, allow_redirects=False)
+            response = self.session.get(self.base_url + "/ui", allow_redirects=False)
+            if response.status_code == 200:
+                self.logger.info("Login session acquired or refreshed.")
+                self.save_session()
+                return True
+            else:
+                self.logger.error("Login failed.")
+                return False
 
     def open_door(self, room_id: str = ""):
         """Open the door."""
         room_id = room_id or self.room_id
         self.logger.debug("Opening the door.")
         response = self.session.get(
-            f"https://door.sjtu.edu.cn/api/key?roomid={get_truncated_room_id(room_id)}"
+            self.base_url + f"/api/key?roomid={get_truncated_room_id(room_id)}"
         )
         # success: {"errno":200,"error":"{\"code\":200,\"data\":\"远程开门指令处理完成\",\"operateId\":xxx,\"requestId\":\"xxx\",\"message\":\"OK\"}","total":0}
         # failire: {"errno":403,"error":"你没有权限开启此门！","total":0}
@@ -57,10 +57,11 @@ class DoorClient(OAuthClientBase):
         """Get the room name."""
         room_id = room_id or self.room_id
         response = self.session.get(
-            f"https://door.sjtu.edu.cn/api/key/roomname?roomid={get_truncated_room_id(room_id)}"
+            self.base_url + f"/api/key/roomname?roomid={get_truncated_room_id(room_id)}"
         )
-        # success: {"errno":200,"error":"success","total":1,"entities":["xx校区-xx宿舍-xxx"]}
-        # failure: {"errno":200,"error":"success","total":1,"entities":["房间号输入错误！"]}
+        # success: 200, {"errno":200,"error":"success","total":1,"entities":["xx校区-xx宿舍-xxx"]}
+        # failure: 200, {"errno":200,"error":"success","total":1,"entities":["房间号输入错误！"]}
+        # failure: 401, {"errno":10004,"error":"USER_LOGIN_REQUIRED","total":0}
         return response.json()["entities"][0] if response.status_code == 200 else None
 
 
@@ -75,7 +76,7 @@ if __name__ == "__main__":
     logger = get_logger("door_client_test", level=logging.DEBUG)
 
     # get room id from test/room_id.txt
-    with open("test/room_id.txt", "r") as f:
+    with open("room_id.txt", "r") as f:
         room_id = f.read().strip()
 
     door_client = DoorClient(room_id)
