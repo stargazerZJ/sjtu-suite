@@ -20,7 +20,7 @@ with open('credentials.json', 'r') as f:
 
 # Initialize DoorClient and JACLogin
 jac_login = JACLogin(credentials['username'], credentials['password'])
-door_client = DoorClient(credentials['room_id'])
+door_client = DoorClient(credentials['room_id'], jac_login)
 
 # Your predefined token (ideally should be in Env Variable)
 # ACCESS_TOKEN = os.getenv('DOOR_ACCESS_TOKEN') or str(uuid.uuid4())
@@ -49,7 +49,7 @@ def open_door():
 
 def refresh_session():
     try:
-        if not door_client.login(jac_login):
+        if not door_client.login():
             app.logger.error(f"{datetime.now()}: Scheduled session refresh failed")
         else:
             app.logger.info(f"{datetime.now()}: Scheduled session refresh successful")
@@ -71,7 +71,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Run Flask app with specified port.')
     parser.add_argument('-p', '--port', type=int, default=5000, help='Port to listen on (default: 5000)')
 
-    door_client.login(jac_login)
+    door_client.login()
     scheduler.start()
     args = parser.parse_args()
     app.run(debug=False, port=args.port)

@@ -11,19 +11,20 @@ def get_truncated_room_id(room_id: str):
 class DoorClient(OAuthClientBase):
     """Client for the SJTU dormitory door opening service."""
 
-    def __init__(self, room_id: str, session_file="door_client.cookies"):
+    def __init__(self, room_id: str, jac_login: JACLogin, session_file="door_client.cookies"):
         super().__init__("DoorClient", session_file)
         self.room_id = room_id
         self.base_url = f"https://door.sjtu.edu.cn"
+        self.jac_login = jac_login
 
-    def login(self, jac_login: JACLogin):
+    def login(self):
         """Login to the door opening service."""
         self.logger.debug("Performing login.")
         response = self.session.get(self.base_url + "/ui", allow_redirects=False)
         if response.status_code == 302:
             login_url = response.headers["Location"]
             self.logger.debug("Login required, performing login.")
-            final_redirect_url = jac_login.login(login_url)
+            final_redirect_url = self.jac_login.login(login_url)
             # final_redirect_url = final_redirect_url.replace("http://", "https://")
             self.session.get(final_redirect_url, allow_redirects=False)
             response = self.session.get(self.base_url + "/ui", allow_redirects=False)
@@ -79,9 +80,9 @@ if __name__ == "__main__":
     with open("room_id.txt", "r") as f:
         room_id = f.read().strip()
 
-    door_client = DoorClient(room_id)
     jac_login = get_test_jac_login()
-    door_client.login(jac_login)
+    door_client = DoorClient(room_id, jac_login)
+    door_client.login()
     door_client.open_door()
 
     # get room name
