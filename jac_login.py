@@ -77,6 +77,7 @@ class JACLogin(OAuthClientBase):
                     **params,
                 },
                 headers={"accept-language": "zh-CN"},
+                allow_redirects=False,
             )
             # if the login is successful or happens too quickly, the response will be html. Otherwise, it will be json.
             # e.g. {"errno":1,"error":"请正确填写验证码","code":"WRONG_CAPTCHA","url":null}
