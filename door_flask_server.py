@@ -1,6 +1,7 @@
 import argparse
 from flask import Flask, request, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 import json
 import logging
 import os
@@ -59,7 +60,8 @@ def refresh_session():
 
 # Schedule the session refresh every hour
 scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
-scheduler.add_job(refresh_session, 'cron', minute=0)
+cron_trigger = CronTrigger(timezone="Asia/Shanghai", minute='0,30')
+scheduler.add_job(refresh_session, trigger=cron_trigger)
 
 
 # # Shut down the scheduler when exiting the app
