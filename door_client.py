@@ -43,6 +43,11 @@ class DoorClient(OAuthClientBase):
         response = self.session.get(
             self.base_url + f"/api/key?roomid={get_truncated_room_id(room_id)}"
         )
+        if response.status_code == 401:
+            self.login()
+            response = self.session.get(
+                self.base_url + f"/api/key/roomname?roomid={get_truncated_room_id(room_id)}"
+            )
         # success: {"errno":200,"error":"{\"code\":200,\"data\":\"远程开门指令处理完成\",\"operateId\":xxx,\"requestId\":\"xxx\",\"message\":\"OK\"}","total":0}
         # failire: {"errno":403,"error":"你没有权限开启此门！","total":0}
         if response.json()["errno"] == 200:
@@ -63,6 +68,11 @@ class DoorClient(OAuthClientBase):
         # success: 200, {"errno":200,"error":"success","total":1,"entities":["xx校区-xx宿舍-xxx"]}
         # failure: 200, {"errno":200,"error":"success","total":1,"entities":["房间号输入错误！"]}
         # failure: 401, {"errno":10004,"error":"USER_LOGIN_REQUIRED","total":0}
+        if response.status_code == 401:
+            self.login()
+            response = self.session.get(
+                self.base_url + f"/api/key/roomname?roomid={get_truncated_room_id(room_id)}"
+            )
         return response.json()["entities"][0] if response.status_code == 200 else None
 
 
