@@ -57,6 +57,13 @@ def refresh_session():
     except Exception as e:
         app.logger.error(f"{datetime.now()}: Scheduled session refresh failed: {e}")
 
+@app.after_request
+def log_request(response):
+    if response.status_code == 404:
+        app.logger.info(
+            f'404: "{request.user_agent}" from IP {get_client_ip()}'
+        )
+    return response
 
 # Schedule the session refresh every hour
 scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
