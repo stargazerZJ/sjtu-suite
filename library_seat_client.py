@@ -5,6 +5,7 @@ from jac_login import JACLogin
 from datetime import datetime, timedelta
 import zoneinfo
 
+
 class APIResponse:
     '''Every API response of the library seat system is of the same format.'''
 
@@ -16,6 +17,7 @@ class APIResponse:
         # self.count = response["count"]    # never needed
         # self.vals = response["vals"]
 
+
 class ZoneInfo:
     '''Immutable data class for zone information.'''
     id: int
@@ -24,23 +26,26 @@ class ZoneInfo:
     library: str
     seat_count: int
     seat_ids: list[int]
-    seat_tag_prefix: str    # e.g. "W4-NW-043" -> "W4-NW"
+    seat_tag_prefix: str  # e.g. "W4-NW-043" -> "W4-NW"
     seat_tag_id_range: tuple[int, int]
+
 
 class ReservationInfo:
     id: int
     seat_id: int
     start_time: datetime
+    end_time: datetime
     has_checked_in: bool
     is_temporary_leaving: bool
     has_ended: bool
     infraction: bool
 
+
 class LibrarySeatClient(OAuthClientBase):
     """Client for the SJTU library seat reservation system."""
 
-    def __init__(self, jac_login: JACLogin, session_file="libseat_client.cookies"):
-        super().__init__("LibrarySeatClient", session_file)
+    def __init__(self, jac_login: JACLogin, session_file="libseat_client.cookies", name="LibrarySeatClient"):
+        super().__init__(name, session_file)
         self.base_url = f"https://libseat.sjtu.edu.cn"
         self.jac_login = jac_login
         self.user_id = self.get_user_id()
@@ -214,10 +219,10 @@ class LibrarySeatClient(OAuthClientBase):
             # - "预约设备信息错误"
             return False, None, response.message
 
-    def cancel_reservation(self, reservation_id: int):
+    def cancel_reservation(self, reservation_id: int) -> tuple[bool, str]:
         """Cancel a reservation."""
         data = {"uuid": reservation_id}
-        # If the reservation hasn't begin (<30min from start time), 'delete' should be called
+        # If the reservation hasn't begun (<30min from start time), 'delete' should be called
         response = self.call_API(f"/ic-web/reserve/delete", "POST", data)
         if response.code == 0:
             # message is "删除成功"
@@ -240,13 +245,13 @@ class LibrarySeatClient(OAuthClientBase):
         response = self.call_API(f"/ic-web/reserve/resvInfo", params={
             "beginDate": datetime.today().strftime("%Y-%m-%d"),
             "endDate": datetime.today().strftime("%Y-%m-%d"),
-            "needStatus": 6, # status mask, 6 for not started or started but not ended
+            "needStatus": 6,  # status mask, 6 for not started or started but not ended
             # "needStatus": 4095,
             # if the two params below is unspecified, all results are given
             # "page": 1,
             # "pageNum": 10,
-            "orderKey": "gmt_create",   # reservation creation time
-            "orderModel": "desc"    # how poor English!
+            "orderKey": "gmt_create",  # reservation creation time
+            "orderModel": "desc"  # how poor English!
         })
         assert response.code == 0
         return [self.parse_reservation_info(info) for info in response.data]
@@ -257,12 +262,14 @@ class LibrarySeatClient(OAuthClientBase):
         reservation.id = info["uuid"]
         reservation.seat_id = info["resvDevInfoList"][0]["devId"]
         reservation.start_time = datetime.fromtimestamp(info["resvBeginTime"] / 1000)
+        reservation.end_time = datetime.fromtimestamp(info["resvEndTime"] / 1000)
         status_mask = info["resvStatus"]
         reservation.has_checked_in = bool(status_mask & 64)
         reservation.is_temporary_leaving = bool(status_mask & 2048)
         reservation.has_ended = bool(status_mask & 128)
         reservation.infraction = bool(status_mask & 16)
         return reservation
+
 
 if __name__ == "__main__":
 
@@ -322,6 +329,7 @@ if __name__ == "__main__":
             print("id:", r.id)
             print("seat_id:", r.seat_id)
             print("start_time:", r.start_time)
+            print("end_time:", r.end_time)
             print("has_checked_in:", r.has_checked_in)
             print("is_temporary_leaving:", r.is_temporary_leaving)
             print("has_ended:", r.has_ended)
@@ -339,5 +347,3 @@ if __name__ == "__main__":
         print("Seat mapping:")
         for key, value in itertools.islice(seat_mapping.items(), 20):
             print(f"{key}: {value}")
-
-
