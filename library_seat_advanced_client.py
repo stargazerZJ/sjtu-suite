@@ -34,8 +34,6 @@ class ReservationCache:
 class LibrarySeatAdvancedClient(LibrarySeatClient):
     scheduler: BackgroundScheduler
     reservation_cache: ReservationCache
-    _postpone_job: Job
-    _schedule_postpone_job: Job
     _seat_tag_to_id: dict[str, int]
     _seat_id_to_tag: dict[int, str]
 
@@ -48,9 +46,9 @@ class LibrarySeatAdvancedClient(LibrarySeatClient):
         self.scheduler.start()
         self._seat_tag_to_id = self.get_seat_mapping()
         self._seat_id_to_tag = {v: k for k, v in self._seat_tag_to_id.items()}
-        self._postpone_job = self.scheduler.add_job(self.postpone_if_late, trigger="date", run_date=datetime.now() + timedelta(days=1))
-        self._postpone_job.pause()
-        self._schedule_postpone_job = self.scheduler.add_job(self.schedule_postpone, trigger="interval", minutes=15)
+        self.scheduler.add_job(self.postpone_if_late, id='postpone_if_late', trigger="date",
+                               run_date=datetime.now() + timedelta(days=1)).pause()  # Pause the job initially
+        self.scheduler.add_job(self.schedule_postpone, id='schedule_postpone', trigger="interval", minutes=15)
         self.logger.warning("Client started.")
         self.schedule_postpone()
 
@@ -93,18 +91,22 @@ class LibrarySeatAdvancedClient(LibrarySeatClient):
             self.logger.info(f"Canceling reservation {self.seat_tag_from_id(upcoming_reservation.seat_id)}")
             success, message = self.cancel_reservation(upcoming_reservation)
             if not success:
-                self.logger.error(f"Failed to cancel reservation {self.seat_tag_from_id(upcoming_reservation.seat_id)}: {message}")
+                self.logger.error(
+                    f"Failed to cancel reservation {self.seat_tag_from_id(upcoming_reservation.seat_id)}: {message}")
                 return
             if upcoming_reservation.end_time - new_begin_time < timedelta(hours=1):
                 self.logger.warning(f"Cannot postpone reservation. End time too close: {upcoming_reservation.end_time}")
                 return
-            success, _, message = self.reserve_seat(upcoming_reservation.seat_id, new_begin_time, upcoming_reservation.end_time)
+            success, _, message = self.reserve_seat(upcoming_reservation.seat_id, new_begin_time,
+                                                    upcoming_reservation.end_time)
             if not success:
-                self.logger.error(f"Failed to postpone reservation {self.seat_tag_from_id(upcoming_reservation.seat_id)}: {message}")
+                self.logger.error(
+                    f"Failed to postpone reservation {self.seat_tag_from_id(upcoming_reservation.seat_id)}: {message}")
                 return
             self.logger.info(
                 f"Postponed reservation {self.seat_tag_from_id(upcoming_reservation.seat_id)} to {new_begin_time}")
-            self._postpone_job = self.scheduler.add_job(self.postpone_if_late, trigger="date", run_date=upcoming_reservation.end_time)
+            self.scheduler.add_job(self.postpone_if_late, id='postpone_if_late', trigger="date",
+                                   run_date=upcoming_reservation.end_time, replace_existing=True)
 
     def schedule_postpone(self):
         """
@@ -112,12 +114,11 @@ class LibrarySeatAdvancedClient(LibrarySeatClient):
         (i.e. 27 minutes after the start time)
         """
         reservations = self.reservation_cache.get(timedelta(minutes=5))
-        # reservations[0].has_checked_in
-        # filter the reservations that have not been checked in
-        # get the earliest start time
-        reservations = [r for r in reservations if not r.has_checked_in]
+        reservations = list(filter(lambda r: not r.has_checked_in, reservations))
         if not reservations:
-            self._postpone_job.pause()
+            postpone_job = self.scheduler.get_job('postpone_if_late')
+            if postpone_job:
+                postpone_job.remove()
             return
         upcoming_reservation = min(reservations, key=lambda r: r.start_time)
         postpone_date = max(
@@ -125,12 +126,14 @@ class LibrarySeatAdvancedClient(LibrarySeatClient):
             datetime.now() + timedelta(seconds=5)
         )
         # postpone_date = datetime.now() + timedelta(seconds=5)
-        if datetime.now() - upcoming_reservation.start_time > timedelta(minutes=30) and not upcoming_reservation.has_checked_in:
+        if datetime.now() - upcoming_reservation.start_time > timedelta(
+                minutes=30) and not upcoming_reservation.has_checked_in:
             self.logger.warning(f"Can't deal with temporary leave for now. Rescheduling postpone job as interval task.")
-            self._postpone_job.reschedule(trigger="interval", minutes=10)
-            self._postpone_job.resume()
+            self.scheduler.add_job(self.postpone_if_late, id='postpone_if_late', trigger="interval", minutes=10,
+                                   replace_existing=True)
             return
-        self._postpone_job.reschedule(trigger="date", run_date=postpone_date)
+        self.scheduler.add_job(self.postpone_if_late, id='postpone_if_late', trigger="date",
+                               run_date=postpone_date, replace_existing=True)
         self.logger.info(
             f"Postpone job of reservation {self.seat_tag_from_id(upcoming_reservation.seat_id)} scheduled for {postpone_date}")
 
