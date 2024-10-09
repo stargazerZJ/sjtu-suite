@@ -116,6 +116,7 @@ class LibrarySeatAdvancedClient(LibrarySeatClient):
         reservations = self.reservation_cache.get(timedelta(minutes=5))
         reservations = list(filter(lambda r: not r.has_checked_in, reservations))
         if not reservations:
+            self.logger.debug("No upcoming reservation found. Cancelling postpone job.")
             postpone_job = self.scheduler.get_job('postpone_if_late')
             if postpone_job:
                 postpone_job.remove()
@@ -145,6 +146,7 @@ if __name__ == "__main__":
     jac_login = get_test_jac_login()
 
     client = LibrarySeatAdvancedClient(jac_login)
+    client.logger.setLevel("DEBUG")
     client.start()
 
     try:
