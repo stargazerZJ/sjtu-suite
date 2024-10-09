@@ -244,7 +244,7 @@ class LibrarySeatClient(OAuthClientBase):
         """Query the reservation."""
         response = self.call_API(f"/ic-web/reserve/resvInfo", params={
             "beginDate": datetime.today().strftime("%Y-%m-%d"),
-            "endDate": datetime.today().strftime("%Y-%m-%d"),
+            "endDate": (datetime.today() + timedelta(days=1)).strftime("%Y-%m-%d"),
             "needStatus": 6,  # status mask, 6 for not started or started but not ended
             # "needStatus": 4095,
             # if the two params below is unspecified, all results are given
