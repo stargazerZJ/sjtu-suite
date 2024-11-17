@@ -83,6 +83,10 @@ class LibrarySeatClient(OAuthClientBase):
         # location: https://libseat.sjtu.edu.cn/authcenter/doAuth/<uuid, hex of length 32>?code=...
         response = self.session.get(location, allow_redirects=False)
         location = response.headers["Location"]
+        # location(probably still): https://libseat.sjtu.edu.cn/authcenter/doAuth/<uuid, hex of length 32>?code=...
+        while location.startswith(self.base_url+"/authcenter/doAuth/"):
+            response = self.session.get(location, allow_redirects=False)
+            location = response.headers["Location"]
         # location: https://libseat.sjtu.edu.cn/ic-web//auth/token?uuid=<uuid, hex of length 32>
         response = self.session.get(location, allow_redirects=False)
         # Now we have the session cookie.
