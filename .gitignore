@@ -2,6 +2,7 @@
 test/
 *.cookies
 credentials.json
+password.txt
 demo/
 
 # IDE
