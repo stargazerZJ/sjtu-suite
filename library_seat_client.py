@@ -4,6 +4,7 @@ from oauth_client import OAuthClientBase
 from jac_login import JACLogin
 from datetime import datetime, timedelta
 import zoneinfo
+import time
 
 
 class APIResponse:
@@ -84,9 +85,12 @@ class LibrarySeatClient(OAuthClientBase):
         response = self.session.get(location, allow_redirects=False)
         location = response.headers["Location"]
         # location(probably still): https://libseat.sjtu.edu.cn/authcenter/doAuth/<uuid, hex of length 32>?code=...
-        while location.startswith(self.base_url+"/authcenter/doAuth/"):
+        for retry_t in range(1,3):
+            if not location.startswith(self.base_url+"/authcenter/doAuth/"):
+                break
             response = self.session.get(location, allow_redirects=False)
             location = response.headers["Location"]
+            time.sleep(0.5)
         # location: https://libseat.sjtu.edu.cn/ic-web//auth/token?uuid=<uuid, hex of length 32>
         response = self.session.get(location, allow_redirects=False)
         # Now we have the session cookie.
