@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify
 from log import get_logger
-from library_seat_client import LibrarySeatClient
+from library_seat_advanced_client import LibrarySeatAdvancedClient
 import argparse
 import logging
 from datetime import datetime,timedelta
@@ -19,7 +19,7 @@ with open('credentials.json', 'r') as f:
 
 # Initialize DoorClient and JACLogin
 jac_login = JACLogin(credentials['username'], credentials['password'])
-library_seat_client = LibrarySeatClient(jac_login)
+library_seat_client = LibrarySeatAdvancedClient(jac_login)
 
 # Your predefined token (ideally should be in Env Variable)
 ACCESS_TOKEN = os.getenv('LIB_ACCESS_TOKEN') or str(uuid.uuid4())
