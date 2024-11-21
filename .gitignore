@@ -2,6 +2,7 @@
 test/
 *.cookies
 credentials.json
+userdata.json
 password.txt
 demo/
 
