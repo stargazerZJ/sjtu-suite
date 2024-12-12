@@ -161,6 +161,35 @@ class LibrarySeatClient(OAuthClientBase):
                         zone_info[zone["id"]] = info
 
         return zone_info
+    
+    def get_zone_info_with_parent(self)->object:
+        """Get zone information and corresponding floor id & library id, representing as a tree-like object."""
+        """use "key" to replace "id","label" replace "name" to fit antd Components in frontend."""
+        response = self.call_API(f"/ic-web/seatMenu")
+
+        zone_info = []
+        for library in response.data:
+            library_info=[]
+            for floor in library.get('children', []):
+                floor_info = []
+                for zone in floor.get('children', []):
+                    if zone["totalCount"] > 0:
+                        floor_info.append({
+                            "key":zone["id"],
+                            "label":zone["name"]
+                        })
+                library_info.append({
+                    "key":floor["id"]+100,
+                    "label":floor["name"],
+                    "children":floor_info
+                })
+            # to avoid duplicate keys, add 100 to floor_id and 1000 to library_id
+            zone_info.append({
+                "key":library["id"]+1000,
+                "label":library["name"],
+                "children":library_info
+            })
+        return zone_info
 
     def get_seat_ids(self, zone_id: int) -> list[int]:
         """Get the list of seat IDs in a zone."""
@@ -355,3 +384,14 @@ if __name__ == "__main__":
         print("Seat mapping:")
         for key, value in itertools.islice(seat_mapping.items(), 20):
             print(f"{key}: {value}")
+
+    test_seatMenu_response = False
+    if test_seatMenu_response:
+        response = client.call_API(f"/ic-web/seatMenu")
+        print(response.data)
+
+    test_get_zone_info_with_parent = False
+
+    if test_get_zone_info_with_parent:
+        zone_info_wp = client.get_zone_info_with_parent()
+        print(zone_info_wp)
