@@ -15,13 +15,26 @@ class OAuthClientBase:
         self.set_default_headers()
         self.load_session()
 
+    def set_user_agent(self, agent_type="chrome"):
+        """Set custom User-Agent for the session.
+        
+        Args:
+            agent_type: "chrome" for desktop Chrome, "mobile" for iPhone TaskCenter App
+        """
+        ua_map = {
+            "chrome": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            "mobile": "TaskCenterApp/3.4.5/iPhone 13/ScreenFringe (iOS,iPhone,18.1.1; Scale/3.0)"
+        }
+        if agent_type not in ua_map:
+            self.logger.warning(f"Unknown agent_type: {agent_type}, using chrome UA")
+            agent_type = "chrome"
+        
+        self.session.headers.update({'User-Agent': ua_map[agent_type]})
+        self.logger.debug(f"User-Agent set to: {ua_map[agent_type]}")
+
     def set_default_headers(self):
         """Set default headers for the session."""
-        default_headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'
-        }
-        self.session.headers.update(default_headers)
-        self.logger.debug(f"Default headers set: {default_headers}")
+        self.set_user_agent("chrome")
 
     def save_session(self):
         """Save session cookies to disk."""
