@@ -68,14 +68,25 @@ class PEClient(OAuthClientBase):
     def get_point_rule(self, lng: float, lat: float):
         """Get running point rules for location"""
         location = f"{lng}%2C{lat}"
-        return self.session.get(f"{self.base_url}/api/running/point-rule?location={location}")
+        headers = {
+            "Authorization": self.uid
+        }
+        print(f"{self.base_url}/api/running/point-rule?location={location}")
+        return self.session.get(f"{self.base_url}/api/running/point-rule?location={location}", headers=headers)
 
-    def upload_result(self, data: dict):
+    def upload_result(self, data: dict, lon = 121.4347607421875, lat = 31.024383680555555):
         """Upload running result"""
         headers = {
             "Content-Type": "application/json",
-            "Referer": f"{self.base_url}/sports"
+            "Referer": f"{self.base_url}/sports",
+            "Authorization": self.uid,
+            "User-Agent": "TaskCenterApp/3.4.5/iPhone 13/ScreenFringe (iOS,iPhone,18.1.1; Scale/3.0)"
         }
+
+        response = self.get_point_rule(lon, lat)
+
+        print(response.text)
+
         return self.session.post(
             f"{self.base_url}/api/running/result/upload",
             json=data,
@@ -158,7 +169,7 @@ if __name__ == "__main__":
         print(json.dumps(result_data, indent=2, ensure_ascii=False))
         
         print("\nUploading result...")
-        response = client.upload_result(result_data[0])
+        # response = client.upload_result(result_data[0])
         print(f"Upload response: {response.status_code}")
         print(response.text)
 
