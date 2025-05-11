@@ -14,38 +14,44 @@ class PEClient(OAuthClientBase):
         self.jac_login = jac_login
         self.uid = None
 
-    def validate_session(self) -> tuple[bool, str]:
+    def validate_session(self) -> bool:
         """Check if session is valid"""
-        response = self.session.get(f"{self.base_url}/login")
-        redir_url = response.headers.get("Location")
-        if redir_url and redir_url != "/index":
+        response = self.session.get(f"{self.base_url}/index", allow_redirects=False)
+        response.headers.get("Location")
+        if response.status_code == 302:
             self.logger.debug("Session is invalid, redirecting to login.")
-            return False, redir_url
+            return False
         self.logger.debug("Session is valid.")
-        return True, None
+        return True
 
     def login(self):
         """Login to PE system"""
-        need_login, login_url = self.validate_session()
+        session_stat = self.validate_session()
         
-        if not need_login:
+        if session_stat:
             self.logger.debug("Already logged in.")
             return True
         
-        final_url = self.jac_login.login(login_url)
-        self.session.get(final_url)
-        self.save_session()
-        return self.validate_session()
+        login_url = self.session.get(f"{self.base_url}/login", allow_redirects=False).headers["Location"]
+        final_redirect_url = self.jac_login.login(login_url)
+        self.session.get(final_redirect_url, allow_redirects=False)
+        response = self.session.get(self.base_url + "/index", allow_redirects=False)
+        if response.status_code == 200:
+            self.logger.info("Login session acquired or refreshed.")
+            self.save_session()
+            return True
+        else:
+            self.logger.error("Login failed.")
+            return False
 
     def get_uid(self) -> str:
         """Get user UID from PE system"""
-        if self.uid:
-            return self.uid
-            
-        response = self.session.get(f"{self.base_url}/sports/my/uid")
+        response = self.session.get(f"{self.base_url}/sports/my/uid", allow_redirects=False)
+        if response.status_code == 302:
+            self.login()
         data = response.json()
         if data.get("code") == 0:
-            self.uid = data["data"]["uid"]
+            self.uid = data.get("data").get("uid")
             return self.uid
         raise Exception("Failed to get UID")
 
@@ -76,20 +82,6 @@ class PEClient(OAuthClientBase):
             headers=headers
         )
 
-    def example_result_data(self) -> dict:
-        """Generate example result data"""
-        lng, lat = self.generate_location()
-        return {
-            "timestamp": datetime.now(timezone.utc).astimezone().isoformat(),
-            "location": {
-                "longitude": lng,
-                "latitude": lat,
-                "accuracy": 10.0
-            },
-            "duration": 1800,
-            "distance": 3000,
-        }
-
 
 if __name__ == "__main__":
     import uuid
@@ -118,36 +110,40 @@ if __name__ == "__main__":
         chinese_time = now.strftime("%Y年%m月%d日 %H:%M")
         iso_time = now.strftime("%Y-%m-%d %H:%M:%S")
         
-        tracks = []
-        for i in range(2):
-            point_count = random.randint(100, 500)
-            duration = random.randint(4, 15)
-            distance = random.uniform(10.0, 30.0)
-            
-            points = []
-            base_time = now - timedelta(minutes=30)
-            for j in range(point_count):
-                loc_time = base_time + timedelta(seconds=j)
-                lng, lat = client.generate_location()
-                points.append({
-                    "locatetime": int(loc_time.timestamp() * 1000),
-                    "location": f"{lng:.15f},{lat:.15f}",
-                    "seconds": j
-                })
-            
-            tracks.append({
-                "counts": point_count,
-                "trid": str(uuid.uuid4()).upper(),
-                "duration": duration,
-                "points": points,
-                "status": "normal",
-                "distance": distance
-            })
+        # Fixed locations from the example
+        fixed_location1 = "121.43489203559028,31.0238313984375"
+        fixed_location2 = "121.43489203559028,31.0741323984375"
+        
+        # Generate time points (1 hour apart)
+        base_time = now - timedelta(minutes=30)
+        end_time = now
+        
+        points = [
+            {
+                "locatetime": int(base_time.timestamp() * 1000),
+                "location": fixed_location1,
+                "seconds": 1
+            },
+            {
+                "locatetime": int(end_time.timestamp() * 1000),
+                "location": fixed_location2,
+                "seconds": 1799
+            }
+        ]
+        
+        tracks = [{
+            "counts": 2,
+            "trid": str(uuid.uuid4()).upper(),
+            "duration": 1800,
+            "points": points,
+            "status": "normal",
+            "distance": 90.332086724487311
+        }]
         
         result_data = [{
             "time": chinese_time,
-            "vaildDistance": f"{sum(t['distance'] for t in tracks):.2f}",
-            "sumDistance": f"{sum(t['distance'] for t in tracks) * 1.2:.2f}",
+            "vaildDistance": "4.00",
+            "sumDistance": "5.11",
             "uid": uid,
             "spavg": 0,
             "sid": str(uuid.uuid4()).upper(),
@@ -155,7 +151,7 @@ if __name__ == "__main__":
             "type": "score",
             "fravg": 0,
             "tracks": tracks,
-            "state": False
+            "state": True
         }]
         
         print("Generated running data:")
