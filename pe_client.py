@@ -1,10 +1,22 @@
 import random
 import math
-from log import get_logger
+import json
+import uuid
+from enum import Enum
 from oauth_client import OAuthClientBase
 from jac_login import JACLogin
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from time import sleep
+
+class LocationType(Enum):
+    """Predefined location types for running"""
+    DEFAULT = (121.426100000000000, 31.025860000000000, 121.443170000000000, 31.0311700000000000)
+
+    def __init__(self, start_lon, start_lat, end_lon, end_lat):
+        self.start_lon = start_lon
+        self.start_lat = start_lat
+        self.end_lon = end_lon
+        self.end_lat = end_lat
 
 class PEClient(OAuthClientBase):
     """Client for SJTU PE system running"""
@@ -14,6 +26,7 @@ class PEClient(OAuthClientBase):
         self.base_url = "https://pe.sjtu.edu.cn"
         self.jac_login = jac_login
         self.uid = None
+        self.set_user_agent("mobile")
 
     def validate_session(self) -> bool:
         """Check if session is valid"""
@@ -56,9 +69,9 @@ class PEClient(OAuthClientBase):
             return self.uid
         raise Exception("Failed to get UID")
 
-    def generate_location(self, base_lng=121.4347607421875, base_lat=31.024383680555555) -> tuple[float, float]:
-        """Generate random location within 100m of base point"""
-        radius_meters = 100
+    def generate_location(self, base_lng=121.426100000000000, base_lat=31.025860000000000) -> tuple[float, float]:
+        """Generate random location within 5m of base point"""
+        radius_meters = 5
         radius_deg = radius_meters / 111320.0
         angle = random.uniform(0, 2 * math.pi)
         radius = random.uniform(0, radius_deg)
@@ -75,17 +88,15 @@ class PEClient(OAuthClientBase):
         print(f"{self.base_url}/api/running/point-rule?location={location}")
         return self.session.get(f"{self.base_url}/api/running/point-rule?location={location}", headers=headers)
 
-    def upload_result(self, data: dict, lon = 121.4347607421875, lat = 31.024383680555555):
+    def upload_result(self, data: dict, lon=121.426100000000000, lat=31.025860000000000):
         """Upload running result"""
-        user_agent_string = "TaskCenterApp/3.4.5/iPhone 13/ScreenFringe (iOS,iPhone,18.1.1; Scale/3.0)"
         
         if not self.uid:
             self.logger.error("UID is not set. Cannot upload result.")
             return None
-
+        
         headers_to_send = {
-            "Authorization": self.uid,
-            "User-Agent": user_agent_string
+            "Authorization": self.uid
         }
 
         point_rule_response = self.get_point_rule(lon, lat)
@@ -116,58 +127,63 @@ class PEClient(OAuthClientBase):
 
         return response
 
-
-
-if __name__ == "__main__":
-    import uuid
-    from datetime import datetime, timedelta
-    import json
-    from jac_login import get_test_jac_login
-    
-    def simulate_running():
-        """Simulate complete running process"""
-        jac_login = get_test_jac_login()
-        client = PEClient(jac_login)
+    def simulate_running(self, run_time=None, location_type=LocationType.DEFAULT):
+        """
+        Simulate complete running process with customizable parameters
         
+        Args:
+            run_time: Datetime when the run ended (default: current time)
+            location_type: Type of location from LocationType enum (default: DEFAULT)
+        
+        Returns:
+            API response from server
+        """
         print("Logging in...")
-        if not client.login():
+        if not self.login():
             print("Login failed")
-            return
+            return None
         
         try:
-            uid = client.get_uid()
+            uid = self.get_uid()
             print(f"Got UID: {uid}")
         except Exception as e:
             print(f"Failed to get UID: {e}")
             uid = "TEST_UID_12345"
         
-        now = datetime.now() - timedelta(hours=1)
+        if run_time is None:
+            now = datetime.now()
+        else:
+            now = run_time
+            
         chinese_time = now.strftime("%Y年%m月%d日 %H:%M")
         iso_time = now.strftime("%Y-%m-%d %H:%M")
         
-        fixed_location1 = "121.43489203559028,31.0238313984375"
-        fixed_location2 = "121.43489203559028,31.0741323984375"
+        start_lon, start_lat = self.generate_location(location_type.start_lon, location_type.start_lat)
+        end_lon, end_lat = self.generate_location(location_type.end_lon, location_type.end_lat)
         
-        base_time = now - timedelta(minutes=30)
+        location1 = f"{start_lon},{start_lat}"
+        location2 = f"{end_lon},{end_lat}"
+        
+        base_time = now - timedelta(minutes=10)
         end_time = now
         
         points = [
             {
             "locatetime": int(base_time.timestamp()) * 1000,
-            "location": fixed_location1,
+            "location": location1,
             "seconds": 1
             },
             {
             "locatetime": int(end_time.timestamp()) * 1000,
-            "location": fixed_location2,
-            "seconds": 1799
+            "location": location2,
+            "seconds": 599
             }
         ]
         
         tracks = [{
             "counts": 2,
             "trid": str(uuid.uuid4()).upper(),
-            "duration": 1800,
+            "duration": 600,
             "points": points,
             "status": "normal",
             "distance": 90.332086724487311
@@ -187,12 +203,20 @@ if __name__ == "__main__":
             "state": True
         }]
         
-        print("Generated running data:")
-        print(json.dumps(result_data, indent=2, ensure_ascii=False))
-        
-        print("\nUploading result...")
-        response = client.upload_result(result_data[0])
-        print(f"Upload response: {response.status_code}")
-        print(response.text)
+        self.logger.info(f"Generated result data: {result_data}")
+        response = self.upload_result(result_data[0], location_type.start_lon, location_type.start_lat)
+        return response
 
-    simulate_running()
+
+if __name__ == "__main__":
+    from jac_login import get_test_jac_login
+    
+    def demo_simulate_running():
+        """Demo function for one-click simulation"""
+        jac_login = get_test_jac_login()
+        client = PEClient(jac_login)
+        
+        yesterday = datetime.now() - timedelta(days=7)
+        client.simulate_running(run_time=yesterday, location_type=LocationType.DEFAULT)
+
+    demo_simulate_running()
