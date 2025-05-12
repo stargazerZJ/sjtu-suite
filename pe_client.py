@@ -4,6 +4,7 @@ from log import get_logger
 from oauth_client import OAuthClientBase
 from jac_login import JACLogin
 from datetime import datetime, timezone
+from time import sleep
 
 class PEClient(OAuthClientBase):
     """Client for SJTU PE system running"""
@@ -76,22 +77,45 @@ class PEClient(OAuthClientBase):
 
     def upload_result(self, data: dict, lon = 121.4347607421875, lat = 31.024383680555555):
         """Upload running result"""
-        headers = {
-            "Content-Type": "application/json",
-            "Referer": f"{self.base_url}/sports",
+        user_agent_string = "TaskCenterApp/3.4.5/iPhone 13/ScreenFringe (iOS,iPhone,18.1.1; Scale/3.0)"
+        
+        if not self.uid:
+            self.logger.error("UID is not set. Cannot upload result.")
+            return None
+
+        headers_to_send = {
             "Authorization": self.uid,
-            "User-Agent": "TaskCenterApp/3.4.5/iPhone 13/ScreenFringe (iOS,iPhone,18.1.1; Scale/3.0)"
+            "User-Agent": user_agent_string
         }
 
-        response = self.get_point_rule(lon, lat)
+        point_rule_response = self.get_point_rule(lon, lat)
+        self.logger.info(f"Point rule response status: {point_rule_response.status_code}")
+        self.logger.info(f"Point rule response text: {point_rule_response.text}")
 
-        print(response.text)
+        if point_rule_response.status_code != 200:
+            self.logger.error("Failed to get point rule, aborting upload.")
+            return point_rule_response
 
-        return self.session.post(
+        sleep(25)
+
+        json_payload_string = json.dumps([data], ensure_ascii=False)
+        
+        headers_to_send['Content-Type'] = 'application/json; charset=utf-8'
+
+        self.logger.info(f"Attempting to upload result with UID: {self.uid}")
+        self.logger.debug(f"Sending JSON payload: {json_payload_string}")
+
+        response = self.session.post(
             f"{self.base_url}/api/running/result/upload",
-            json=data,
-            headers=headers
+            data=json_payload_string.encode('utf-8'),
+            headers=headers_to_send
         )
+
+        self.logger.info(f"Upload response status: {response.status_code}")
+        self.logger.info(f"Upload response text: {response.text}")
+
+        return response
+
 
 
 if __name__ == "__main__":
@@ -117,28 +141,26 @@ if __name__ == "__main__":
             print(f"Failed to get UID: {e}")
             uid = "TEST_UID_12345"
         
-        now = datetime.now()
+        now = datetime.now() - timedelta(hours=1)
         chinese_time = now.strftime("%Y年%m月%d日 %H:%M")
-        iso_time = now.strftime("%Y-%m-%d %H:%M:%S")
+        iso_time = now.strftime("%Y-%m-%d %H:%M")
         
-        # Fixed locations from the example
         fixed_location1 = "121.43489203559028,31.0238313984375"
         fixed_location2 = "121.43489203559028,31.0741323984375"
         
-        # Generate time points (1 hour apart)
         base_time = now - timedelta(minutes=30)
         end_time = now
         
         points = [
             {
-                "locatetime": int(base_time.timestamp() * 1000),
-                "location": fixed_location1,
-                "seconds": 1
+            "locatetime": int(base_time.timestamp()) * 1000,
+            "location": fixed_location1,
+            "seconds": 1
             },
             {
-                "locatetime": int(end_time.timestamp() * 1000),
-                "location": fixed_location2,
-                "seconds": 1799
+            "locatetime": int(end_time.timestamp()) * 1000,
+            "location": fixed_location2,
+            "seconds": 1799
             }
         ]
         
@@ -153,8 +175,8 @@ if __name__ == "__main__":
         
         result_data = [{
             "time": chinese_time,
-            "vaildDistance": "4.00",
-            "sumDistance": "5.11",
+            "vaildDistance": "3.20",
+            "sumDistance": "5.59",
             "uid": uid,
             "spavg": 0,
             "sid": str(uuid.uuid4()).upper(),
@@ -169,7 +191,7 @@ if __name__ == "__main__":
         print(json.dumps(result_data, indent=2, ensure_ascii=False))
         
         print("\nUploading result...")
-        # response = client.upload_result(result_data[0])
+        response = client.upload_result(result_data[0])
         print(f"Upload response: {response.status_code}")
         print(response.text)
 
