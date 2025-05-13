@@ -2,11 +2,13 @@ import random
 import math
 import json
 import uuid
+import os
 from enum import Enum
 from oauth_client import OAuthClientBase
 from jac_login import JACLogin
 from datetime import datetime, timezone, timedelta
 from time import sleep
+from pathlib import Path
 
 class LocationType(Enum):
     """Predefined location types for running"""
@@ -69,9 +71,9 @@ class PEClient(OAuthClientBase):
             return self.uid
         raise Exception("Failed to get UID")
 
-    def generate_location(self, base_lng=121.426100000000000, base_lat=31.025860000000000) -> tuple[float, float]:
+    def generate_location(self, base_lng, base_lat) -> tuple[float, float]:
         """Generate random location within 5m of base point"""
-        radius_meters = 5
+        radius_meters = 0.2
         radius_deg = radius_meters / 111320.0
         angle = random.uniform(0, 2 * math.pi)
         radius = random.uniform(0, radius_deg)
@@ -88,7 +90,7 @@ class PEClient(OAuthClientBase):
         print(f"{self.base_url}/api/running/point-rule?location={location}")
         return self.session.get(f"{self.base_url}/api/running/point-rule?location={location}", headers=headers)
 
-    def upload_result(self, data: dict, lon=121.426100000000000, lat=31.025860000000000):
+    def upload_result(self, data: dict, lon, lat):
         """Upload running result"""
         
         if not self.uid:
@@ -127,13 +129,28 @@ class PEClient(OAuthClientBase):
 
         return response
 
-    def simulate_running(self, run_time=None, location_type=LocationType.DEFAULT):
+    def load_points_data(self, points_file="points.json"):
+        """Load points data from JSON file"""
+        try:
+            script_dir = Path(os.path.dirname(os.path.abspath(__file__)))
+            file_path = script_dir / points_file
+            
+            with open(file_path, "r") as f:
+                points_data = json.load(f)
+            
+            self.logger.info(f"Loaded {len(points_data)} points from {points_file}")
+            return points_data
+        except Exception as e:
+            self.logger.error(f"Failed to load points data: {e}")
+            return []
+
+    def simulate_running(self, run_time=None, n=15000):
         """
         Simulate complete running process with customizable parameters
         
         Args:
             run_time: Datetime when the run ended (default: current time)
-            location_type: Type of location from LocationType enum (default: DEFAULT)
+            n: Number of continuous points to use (default: 15000)
         
         Returns:
             API response from server
@@ -158,41 +175,74 @@ class PEClient(OAuthClientBase):
         chinese_time = now.strftime("%Y年%m月%d日 %H:%M")
         iso_time = now.strftime("%Y-%m-%d %H:%M")
         
-        start_lon, start_lat = self.generate_location(location_type.start_lon, location_type.start_lat)
-        end_lon, end_lat = self.generate_location(location_type.end_lon, location_type.end_lat)
+        all_points = self.load_points_data()
         
-        location1 = f"{start_lon},{start_lat}"
-        location2 = f"{end_lon},{end_lat}"
-        
-        base_time = now - timedelta(minutes=10)
-        end_time = now
-        
-        points = [
-            {
-            "locatetime": int(base_time.timestamp()) * 1000,
-            "location": location1,
-            "seconds": 1
-            },
-            {
-            "locatetime": int(end_time.timestamp()) * 1000,
-            "location": location2,
-            "seconds": 599
-            }
-        ]
+        # If no points found or n is too large, fallback to original method
+        if not all_points or len(all_points) < n:
+            self.logger.warning(f"Not enough points in points.json (needed {n}, found {len(all_points)}). Falling back to basic simulation.")
+            start_lon, start_lat = self.generate_location(LocationType.DEFAULT.start_lon, LocationType.DEFAULT.start_lat)
+            end_lon, end_lat = self.generate_location(LocationType.DEFAULT.end_lon, LocationType.DEFAULT.end_lat)
+            
+            location1 = f"{start_lon},{start_lat}"
+            location2 = f"{end_lon},{end_lat}"
+            
+            base_time = now - timedelta(minutes=10)
+            end_time = now
+            
+            points = [
+                {
+                "locatetime": int(base_time.timestamp()) * 1000,
+                "location": location1,
+                "seconds": 1
+                },
+                {
+                "locatetime": int(end_time.timestamp()) * 1000,
+                "location": location2,
+                "seconds": 599
+                }
+            ]
+            total_distance = 1730.332086724487311
+            total_duration = 600
+            
+        else:
+            # Select a random starting point for n continuous points
+            if len(all_points) > n:
+                start_idx = random.randint(0, len(all_points) - n)
+                selected_points = all_points[start_idx:start_idx + n]
+            else:
+                selected_points = all_points
+            
+            total_duration = selected_points[-1]["seconds"] - selected_points[0]["seconds"]
+            
+            end_time = now
+            start_time = end_time - timedelta(seconds=total_duration)
+            processed_points = []
+            
+            for point in selected_points:
+                point_copy = point.copy()
+                point_copy["locatetime"] = int(start_time.timestamp() + point["seconds"]) * 1000
+                point_copy["seconds"] = point["seconds"] - selected_points[0]["seconds"]
+                processed_points.append(point_copy)
+            
+            points = processed_points
+            
+            total_distance = 0.25 * total_duration / 60  # Simple estimate: ~15km per hour
+            
+            self.logger.info(f"Generated track with {len(points)} points spanning {total_duration} seconds")
         
         tracks = [{
-            "counts": 2,
+            "counts": len(points),
             "trid": str(uuid.uuid4()).upper(),
-            "duration": 600,
+            "duration": total_duration,
             "points": points,
             "status": "normal",
-            "distance": 90.332086724487311
+            "distance": f"{(total_distance * 1000 * 1.05):.15f}"
         }]
         
         result_data = [{
             "time": chinese_time,
-            "vaildDistance": "3.20",
-            "sumDistance": "5.59",
+            "vaildDistance": f"{(total_distance):.2f}",  # Convert to km
+            "sumDistance": f"{(total_distance*1.05):.2f}",  # Slightly higher than valid distance
             "uid": uid,
             "spavg": 0,
             "sid": str(uuid.uuid4()).upper(),
@@ -202,9 +252,17 @@ class PEClient(OAuthClientBase):
             "tracks": tracks,
             "state": True
         }]
+        start_location = points[0]["location"].split(",")
+        lon, lat = float(start_location[0]), float(start_location[1])
         
-        self.logger.info(f"Generated result data: {result_data}")
-        response = self.upload_result(result_data[0], location_type.start_lon, location_type.start_lat)
+        # export result data to JSON file
+        output_file = "result.json"
+        with open(output_file, "w") as f:
+            json.dump(result_data, f, indent=2, ensure_ascii=False)
+        self.logger.info(f"Result data saved to {output_file}")
+
+        self.logger.info(f"Generated result data with {len(points)} points")
+        response = self.upload_result(result_data[0], lon, lat)
         return response
 
 
@@ -216,7 +274,7 @@ if __name__ == "__main__":
         jac_login = get_test_jac_login()
         client = PEClient(jac_login)
         
-        yesterday = datetime.now() - timedelta(days=7)
-        client.simulate_running(run_time=yesterday, location_type=LocationType.DEFAULT)
+        nowtime = datetime.now() - timedelta(days=15)
+        client.simulate_running(run_time=nowtime, n=10000)
 
     demo_simulate_running()

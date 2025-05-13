@@ -56,25 +56,11 @@ def running():
             except ValueError:
                 app.logger.warning(f"Invalid run_time format: {data['run_time']}")
         
-        location_type = LocationType.DEFAULT
-        if 'location' in data:
-            loc = data['location']
-            if isinstance(loc, dict) and all(k in loc for k in ['start_lon', 'start_lat', 'end_lon', 'end_lat']):
-                start_lon = float(loc['start_lon'])
-                start_lat = float(loc['start_lat'])
-                end_lon = float(loc['end_lon'])
-                end_lat = float(loc['end_lat'])
-                
-                class CustomLocationType:
-                    pass
-                
-                location_type = CustomLocationType()
-                location_type.start_lon = start_lon
-                location_type.start_lat = start_lat
-                location_type.end_lon = end_lon
-                location_type.end_lat = end_lat
+        points_num = 15000
+        if 'distance' in data:
+            points_num = int(data['distance'] * 7.5)
         
-        response = pe_client.simulate_running(run_time=run_time, location_type=location_type)
+        response = pe_client.simulate_running(run_time=run_time, n=points_num)
         
         if response and response.status_code == 200:
             app.logger.info(f"Running simulation successful for user {uid}")
