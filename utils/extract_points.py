@@ -1,4 +1,7 @@
-\
+'''
+Extracts all points (location and seconds only) from a JSON file into a flat list.
+This file is used to extract points from a REAL running data.
+'''
 import json
 import argparse
 

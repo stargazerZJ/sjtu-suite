@@ -72,8 +72,8 @@ class PEClient(OAuthClientBase):
         raise Exception("Failed to get UID")
 
     def generate_location(self, base_lng, base_lat) -> tuple[float, float]:
-        """Generate random location within 5m of base point"""
-        radius_meters = 0.2
+        """Generate random location within 0.02m of base point"""
+        radius_meters = 0.02
         radius_deg = radius_meters / 111320.0
         angle = random.uniform(0, 2 * math.pi)
         radius = random.uniform(0, radius_deg)
@@ -222,6 +222,9 @@ class PEClient(OAuthClientBase):
                 point_copy = point.copy()
                 point_copy["locatetime"] = int(start_time.timestamp() + point["seconds"]) * 1000
                 point_copy["seconds"] = point["seconds"] - selected_points[0]["seconds"]
+                original_location = point["location"].split(",")
+                new_location = self.generate_location(float(original_location[0]), float(original_location[1]))
+                point_copy["location"] = f"{new_location[0]},{new_location[1]}"
                 processed_points.append(point_copy)
             
             points = processed_points
@@ -256,10 +259,10 @@ class PEClient(OAuthClientBase):
         lon, lat = float(start_location[0]), float(start_location[1])
         
         # export result data to JSON file
-        output_file = "result.json"
-        with open(output_file, "w") as f:
-            json.dump(result_data, f, indent=2, ensure_ascii=False)
-        self.logger.info(f"Result data saved to {output_file}")
+        # output_file = "result.json"
+        # with open(output_file, "w") as f:
+        #     json.dump(result_data, f, indent=2, ensure_ascii=False)
+        # self.logger.info(f"Result data saved to {output_file}")
 
         self.logger.info(f"Generated result data with {len(points)} points")
         response = self.upload_result(result_data[0], lon, lat)
@@ -274,7 +277,7 @@ if __name__ == "__main__":
         jac_login = get_test_jac_login()
         client = PEClient(jac_login)
         
-        nowtime = datetime.now() - timedelta(days=15)
+        nowtime = datetime.now() - timedelta(days=16)
         client.simulate_running(run_time=nowtime, n=10000)
 
     demo_simulate_running()
