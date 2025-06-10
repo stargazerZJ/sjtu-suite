@@ -1,5 +1,0 @@
-flask
-apscheduler
-requests
-flask-cors
-tzdata
