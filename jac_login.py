@@ -50,6 +50,59 @@ class JACLogin(OAuthClientBase):
         self.logger.debug(f"Logged in as {self.username}.")
         return final_redirect_url
 
+    def handle_2fa(self, login_page):
+        self.logger.info("Two-Step Verification required.")
+        
+        match = re.search(r"account:\s*'([^']+)'", login_page.text)
+        if match:
+            account = match.group(1)
+        else:
+            self.logger.warning("Could not extract account from 2FA page, using configured username.")
+            account = self.username
+
+        print("Select 2FA method:")
+        print("1. My SJTU App (app)")
+        print("2. Email (email)")
+        print("3. SMS (sms)")
+        choice = input("Enter choice (1/2/3 or name): ").strip().lower()
+
+        method = "app"
+        if choice in ["2", "email"]:
+            method = "email"
+        elif choice in ["3", "sms"]:
+            method = "sms"
+
+        self.logger.info(f"Sending code via {method}...")
+        r = self.session.post(
+            "https://jaccount.sjtu.edu.cn/jaccount/2fa/loginVerify",
+            data={"c": method},
+            headers={"X-Requested-With": "XMLHttpRequest"}
+        )
+
+        if r.json().get("errno") != 0:
+            self.logger.error(f"Failed to send code: {r.json().get('error')}")
+            return False
+
+        code = input("Enter the code you received: ")
+
+        self.logger.info("Submitting code...")
+        r = self.session.post(
+            "https://jaccount.sjtu.edu.cn/jaccount/2faVerify",
+            data={
+                "account": account,
+                "captcha": code,
+                "trust": "true"
+            },
+            headers={"X-Requested-With": "XMLHttpRequest"}
+        )
+
+        if r.json().get("errno") == 0:
+            self.logger.info("2FA successful.")
+            return True
+        else:
+            self.logger.error(f"2FA failed: {r.json().get('error')}")
+            return False
+
     def do_login(self, login_url, retry_count=3):
         """Perform the login process."""
 
@@ -64,7 +117,14 @@ class JACLogin(OAuthClientBase):
                 return login_page.headers["Location"]
             self.logger.debug(f"Login attempt {i + 1}/{retry_count}")
             params = extract_auth_params(login_page.url)
-            uuid = re.search(r'uuid: "([0-9a-f-]+)"', login_page.text).group(1)
+            match = re.search(r'uuid: "([0-9a-f-]+)"', login_page.text)
+            if not match:
+                if "Two-Step Verification" in login_page.text:
+                    if self.handle_2fa(login_page):
+                        continue
+                    else:
+                        raise ValueError("2FA failed.")
+            uuid = match.group(1)
             captcha = self.get_captcha(uuid, login_page.url)
             captcha = self.solve_captcha(captcha)
             time.sleep(0.5 if i == 0 else 1.0)
@@ -99,14 +159,16 @@ class JACLogin(OAuthClientBase):
 
     def solve_captcha(self, image):
         try:
+            self.logger.info("Solving captcha")
             r = requests.post(
                 "https://plus.sjtu.edu.cn/captcha-solver/",
                 files={"image": ("captcha.jpg", io.BytesIO(image))}
             )
             return r.json()["result"]
         except Exception as e:
-            self.logger.warning(f"Captcha solving failed: {e}")
-            return "error"
+            with open("captcha.jpg", "wb") as f:
+                f.write(image)
+            return input("Please solve the captcha and enter the result: ")
 
 def get_test_jac_login():
     with open("password.txt") as f:
