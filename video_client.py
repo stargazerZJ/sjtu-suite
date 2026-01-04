@@ -382,9 +382,19 @@ class VideoClient(OAuthClientBase):
         """
         self.logger.info("Downloading video to: %s", output_path)
         
+        headers = {
+            "Accept": "*/*",
+            "Accept-Encoding": "identity",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://v.sjtu.edu.cn/",
+            "Sec-Fetch-Dest": "video",
+            "Sec-Fetch-Mode": "no-cors",
+            "Sec-Fetch-Site": "same-site",
+        }
+        
         try:
-            # Stream the download
-            response = self.session.get(url, stream=True)
+            # Stream the download with proper headers
+            response = self.session.get(url, stream=True, headers=headers)
             response.raise_for_status()
             
             total_size = int(response.headers.get('content-length', 0))
@@ -501,7 +511,7 @@ if __name__ == "__main__":
             if video_info:
                 urls = client.get_video_urls(video_info)
                 for ch, url, desc in urls:
-                    logger.info("Stream %d (%s): %s...", ch, desc, url[:50])
+                    logger.info("Stream %d (%s): %s", ch, desc, url)
         else:
             logger.warning("No sessions found")
     else:
