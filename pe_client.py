@@ -109,7 +109,7 @@ class PEClient(OAuthClientBase):
             self.logger.error("Failed to get point rule, aborting upload.")
             return point_rule_response
 
-        sleep(25)
+        sleep(2)
 
         json_payload_string = json.dumps([data], ensure_ascii=False)
         
@@ -277,7 +277,7 @@ if __name__ == "__main__":
         jac_login = get_test_jac_login()
         client = PEClient(jac_login)
         
-        nowtime = datetime.now() - timedelta(days=16)
+        nowtime = datetime.now() - timedelta(minutes=30)
         client.simulate_running(run_time=nowtime, n=10000)
 
     demo_simulate_running()
