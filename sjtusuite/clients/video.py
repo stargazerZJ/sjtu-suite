@@ -13,7 +13,7 @@ API Endpoints:
 
 import os
 import re
-from urllib.parse import urlparse, parse_qs, urljoin, quote
+from urllib.parse import urljoin, quote
 from sjtusuite.auth import OAuthClientBase, JACLogin
 
 
@@ -27,9 +27,9 @@ class VideoClient(OAuthClientBase):
         self.video_base = "https://v.sjtu.edu.cn"
         self.api_base = f"{self.video_base}/jy-application-canvas-sjtu"
         self.token_id = None
-        self.token_id = None
         self.token = None  # JWT-like API token from headers
         self.canvas_course_id = None # Extracted courId needed for requests
+        self.video_course_id = None  # Video platform course ID from sessions (for summary/subtitles)
 
     def validate_session(self):
         """Check if current session is valid."""
@@ -297,6 +297,21 @@ class VideoClient(OAuthClientBase):
         
         sessions = data if isinstance(data, list) else data.get("records", [])
         self.logger.info("Found %d video sessions", len(sessions))
+        
+        # Extract video platform courseId from first session if available
+        # Try multiple possible field names
+        if sessions and not self.video_course_id:
+            first_session = sessions[0]
+            # Log available keys for debugging
+            self.logger.debug("Session keys: %s", list(first_session.keys()))
+            
+            # Try different possible field names for course ID
+            for field_name in ['courseId', 'ltiCourseId', 'course_id', 'courId']:
+                if field_name in first_session and first_session[field_name]:
+                    self.video_course_id = first_session[field_name]
+                    self.logger.info("Stored video_course_id from '%s': %s", field_name, self.video_course_id)
+                    break
+        
         return sessions
 
     def get_video_info(self, video_id=None, session_info=None):
@@ -469,6 +484,181 @@ class VideoClient(OAuthClientBase):
             results.append((output_path, success))
         
         return results
+
+    def get_course_summary(self, course_id=None, platform=1):
+        """
+        Fetch AI-generated course summary and document skims for a course.
+        
+        This endpoint returns structured summaries of lecture content including:
+        - Overview of each time segment
+        - Detailed content description
+        - Time ranges (bg = begin time in ms, ed = end time in ms)
+        
+        Args:
+            course_id: Video platform course ID. If not provided, uses stored video_course_id.
+            platform: Platform identifier (default: 1 for Canvas)
+            
+        Returns:
+            dict: Summary data with 'documentSkims' list, or None on failure
+        """
+        if not course_id:
+            course_id = self.video_course_id
+        
+        if not course_id:
+            self.logger.error("No course_id available for summary request. Call get_sessions() first.")
+            return None
+        
+        endpoint = "/course/summary/canvas/detail"
+        json_data = {
+            "courseId": course_id,
+            "platform": platform
+        }
+        
+        data = self._api_request(endpoint, method="POST", json_data=json_data)
+        
+        if data is None:
+            self.logger.error("Failed to fetch course summary for courseId: %s", course_id)
+            return None
+        
+        skims = data.get("documentSkims", [])
+        self.logger.info("Fetched course summary with %d document skims", len(skims))
+        return data
+
+    def get_subtitles(self, course_id=None, platform=1):
+        """
+        Fetch auto-generated subtitles/transcription for a course video.
+        
+        This endpoint returns the speech-to-text transcription with timestamps.
+        
+        Args:
+            course_id: Video platform course ID. If not provided, uses stored video_course_id.
+            platform: Platform identifier (default: 1 for Canvas)
+            
+        Returns:
+            list: List of subtitle entries, each containing:
+                - bg: Begin time in milliseconds
+                - ed: End time in milliseconds  
+                - res: Chinese transcription text
+                - en/fr/ru/es: Translations (if available)
+                - videoId: Associated video ID
+            Returns None on failure.
+        """
+        if not course_id:
+            course_id = self.video_course_id
+        
+        if not course_id:
+            self.logger.error("No course_id available for subtitles request. Call get_sessions() first.")
+            return None
+        
+        endpoint = "/transfer/translate/detail"
+        json_data = {
+            "courseId": course_id,
+            "platform": platform
+        }
+        
+        data = self._api_request(endpoint, method="POST", json_data=json_data)
+        
+        if data is None:
+            self.logger.error("Failed to fetch subtitles for courseId: %s", course_id)
+            return None
+        
+        subtitles = data.get("afterAssemblyList", [])
+        self.logger.info("Fetched %d subtitle entries", len(subtitles))
+        return subtitles
+
+    def format_subtitles_srt(self, subtitles):
+        """
+        Convert subtitle entries to SRT format string.
+        
+        Args:
+            subtitles: List from get_subtitles()
+            
+        Returns:
+            str: SRT formatted subtitle content
+        """
+        if not subtitles:
+            return ""
+        
+        srt_lines = []
+        for idx, entry in enumerate(subtitles, 1):
+            bg_ms = entry.get("bg", 0)
+            ed_ms = entry.get("ed", 0)
+            text = entry.get("res", "").strip()
+            
+            if not text:
+                continue
+            
+            # Convert milliseconds to SRT time format: HH:MM:SS,mmm
+            def ms_to_srt_time(ms):
+                hours = ms // 3600000
+                ms %= 3600000
+                minutes = ms // 60000
+                ms %= 60000
+                seconds = ms // 1000
+                millis = ms % 1000
+                return "%02d:%02d:%02d,%03d" % (hours, minutes, seconds, millis)
+            
+            start_time = ms_to_srt_time(bg_ms)
+            end_time = ms_to_srt_time(ed_ms)
+            
+            srt_lines.append(str(idx))
+            srt_lines.append("%s --> %s" % (start_time, end_time))
+            srt_lines.append(text)
+            srt_lines.append("")  # Empty line between entries
+        
+        return "\n".join(srt_lines)
+
+    def format_summary_txt(self, summary_data):
+        """
+        Convert course summary to readable text format.
+        
+        Args:
+            summary_data: Dict from get_course_summary()
+            
+        Returns:
+            str: Formatted summary text
+        """
+        if not summary_data:
+            return ""
+        
+        lines = []
+        lines.append("=" * 60)
+        lines.append("COURSE SUMMARY")
+        lines.append("=" * 60)
+        lines.append("")
+        
+        skims = summary_data.get("documentSkims", [])
+        
+        for idx, skim in enumerate(skims, 1):
+            # Convert timestamps
+            bg_ms = skim.get("bg", 0)
+            ed_ms = skim.get("ed", 0)
+            
+            def ms_to_readable(ms):
+                hours = ms // 3600000
+                ms %= 3600000
+                minutes = ms // 60000
+                ms %= 60000
+                seconds = ms // 1000
+                if hours > 0:
+                    return "%d:%02d:%02d" % (hours, minutes, seconds)
+                return "%02d:%02d" % (minutes, seconds)
+            
+            time_range = "[%s - %s]" % (ms_to_readable(bg_ms), ms_to_readable(ed_ms))
+            overview = skim.get("overview", "")
+            content = skim.get("content", "")
+            
+            lines.append("-" * 40)
+            lines.append("Section %d  %s" % (idx, time_range))
+            lines.append("-" * 40)
+            if overview:
+                lines.append("Overview: %s" % overview)
+                lines.append("")
+            if content:
+                lines.append(content)
+            lines.append("")
+        
+        return "\n".join(lines)
 
 
 if __name__ == "__main__":
