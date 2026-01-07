@@ -161,7 +161,7 @@ class JACLogin(OAuthClientBase):
         try:
             self.logger.info("Solving captcha")
             r = requests.post(
-                "https://plus.sjtu.edu.cn/captcha-solver/",
+                "https://geek.sjtu.edu.cn/captcha-solver/",
                 files={"image": ("captcha.jpg", io.BytesIO(image))}
             )
             return r.json()["result"]
