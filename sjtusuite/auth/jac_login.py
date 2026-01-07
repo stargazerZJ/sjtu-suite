@@ -3,8 +3,9 @@ from urllib.parse import urlparse, parse_qs
 import re
 import time
 import io
-from log import get_logger
-from oauth_client import OAuthClientBase
+from sjtusuite.core.log import get_logger
+from sjtusuite.core.config import get_password_file
+from .oauth_base import OAuthClientBase
 
 
 def extract_auth_params(auth_url):
@@ -161,7 +162,7 @@ class JACLogin(OAuthClientBase):
         try:
             self.logger.info("Solving captcha")
             r = requests.post(
-                "https://plus.sjtu.edu.cn/captcha-solver/",
+                "https://geek.sjtu.edu.cn/captcha-solver/",
                 files={"image": ("captcha.jpg", io.BytesIO(image))}
             )
             return r.json()["result"]
@@ -170,28 +171,22 @@ class JACLogin(OAuthClientBase):
                 f.write(image)
             return input("Please solve the captcha and enter the result: ")
 
+
 def get_test_jac_login():
-    with open("password.txt") as f:
-        username = f.readline().strip()
-        password = f.readline().strip()
-    return JACLogin(username, password)
+    username, password = get_password_file()
+    if username and password:
+        return JACLogin(username, password)
+    raise FileNotFoundError("password.txt not found or invalid")
+
 
 if __name__ == "__main__":
     import sys
-    import log
     import logging
     from urllib.parse import urljoin
+    from sjtusuite.core import log
 
     # Configure the root logger for demo purposes
     log.DEFAULT_LOG_LEVEL = logging.DEBUG
-
-    # # Example usage
-    # if len(sys.argv) != 2:
-    #     print("Usage: python jac_login.py <username>")
-    #     sys.exit(1)
-
-    # username = sys.argv[1]
-    # password = getpass.getpass("Enter your password: ")
 
     logger = get_logger("LoginTest")
 
@@ -199,7 +194,6 @@ if __name__ == "__main__":
     session = requests.Session()
     try:
         current_url = "https://my.sjtu.edu.cn"
-        # current_url = "https://i.sjtu.edu.cn/jaccountlogin"
         logger.info(f"Starting login process from URL: {current_url}")
         while not current_url.startswith("https://jaccount.sjtu.edu.cn"):
             response = session.get(current_url, allow_redirects=False)

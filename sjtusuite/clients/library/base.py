@@ -1,7 +1,6 @@
 import itertools
-from log import get_logger
-from oauth_client import OAuthClientBase
-from jac_login import JACLogin
+from sjtusuite.core.log import get_logger
+from sjtusuite.auth import OAuthClientBase, JACLogin
 from datetime import datetime, timedelta
 import zoneinfo
 import time
@@ -313,16 +312,13 @@ if __name__ == "__main__":
     # Initialize logging
     logger = get_logger("LibrarySeatClient_Test")
 
-    from jac_login import get_test_jac_login
+    from sjtusuite.auth import get_test_jac_login
 
     # Create JACLogin instance
     jac_login = get_test_jac_login()
 
     # Create LibrarySeatClient instance
     client = LibrarySeatClient(jac_login)
-
-    # # Attempt to log in
-    # client.login()
 
     # Validate the session
     if client.validate_session():

@@ -1,6 +1,5 @@
-from log import get_logger
-from oauth_client import OAuthClientBase
-from jac_login import JACLogin
+from sjtusuite.core.log import get_logger
+from sjtusuite.auth import OAuthClientBase, JACLogin
 
 
 def get_truncated_room_id(room_id: str):
@@ -49,7 +48,7 @@ class DoorClient(OAuthClientBase):
                 self.base_url + f"/api/key/roomname?roomid={get_truncated_room_id(room_id)}"
             )
         # success: {"errno":200,"error":"{\"code\":200,\"data\":\"远程开门指令处理完成\",\"operateId\":xxx,\"requestId\":\"xxx\",\"message\":\"OK\"}","total":0}
-        # failire: {"errno":403,"error":"你没有权限开启此门！","total":0}
+        # failure: {"errno":403,"error":"你没有权限开启此门！","total":0}
         if response.json()["errno"] == 200:
             self.logger.info("Door opened successfully.")
             self.save_session()
@@ -77,9 +76,9 @@ class DoorClient(OAuthClientBase):
 
 
 if __name__ == "__main__":
-    import log
     import logging
-    from jac_login import get_test_jac_login
+    from sjtusuite.core import log
+    from sjtusuite.auth import get_test_jac_login
 
     # Configure the root logger for demo purposes
     log.DEFAULT_LOG_LEVEL = logging.DEBUG

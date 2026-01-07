@@ -14,8 +14,7 @@ API Endpoints:
 import os
 import re
 from urllib.parse import urlparse, parse_qs, urljoin, quote
-from oauth_client import OAuthClientBase
-from jac_login import JACLogin
+from sjtusuite.auth import OAuthClientBase, JACLogin
 
 
 class VideoClient(OAuthClientBase):
@@ -474,8 +473,8 @@ class VideoClient(OAuthClientBase):
 
 if __name__ == "__main__":
     import logging
-    import log
-    from jac_login import get_test_jac_login
+    from sjtusuite.core import log
+    from sjtusuite.auth import get_test_jac_login
 
     log.DEFAULT_LOG_LEVEL = logging.INFO
     logger = log.get_logger("VideoClientTest", level=logging.INFO)
