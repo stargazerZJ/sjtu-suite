@@ -4,6 +4,7 @@ from http.cookiejar import LWPCookieJar
 import requests
 
 from sjtusuite.core.log import get_logger
+from sjtusuite.core.config import get_sessions_dir
 
 
 class OAuthClientBase:
@@ -11,7 +12,8 @@ class OAuthClientBase:
         self.jac_base_url = "https://jaccount.sjtu.edu.cn"
         self.logger = get_logger(name)
         self.session = requests.Session()
-        self.session.cookies = LWPCookieJar(session_file)
+        cookie_path = get_sessions_dir() / session_file
+        self.session.cookies = LWPCookieJar(str(cookie_path))
         self.set_default_headers()
         self.load_session()
 
