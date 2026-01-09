@@ -3,9 +3,7 @@ import argparse
 from flask import Flask, request, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-import json
 import logging
-import os
 import uuid
 import hmac
 from datetime import datetime
@@ -16,12 +14,15 @@ from sjtusuite.core.config import get_project_root
 from sjtusuite.core.credentials import credentials
 from sjtusuite.servers.base import get_client_ip
 
-
 app = Flask(__name__)
 logging.basicConfig(filename='door_access.log', level=logging.INFO)
 
 # Initialize DoorClient and JACLogin
 jac_login = JACLogin(credentials.username, credentials.password)
+if not credentials.room_id:
+    logger = logging.getLogger('door_server')
+    logger.error("Room ID is not configured in credentials.")
+    exit(1)
 door_client = DoorClient(credentials.room_id, jac_login)
 
 # Your predefined token (ideally should be in Env Variable)

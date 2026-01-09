@@ -6,7 +6,7 @@ A comprehensive collection of automation utilities for Shanghai Jiao Tong Univer
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/sjtu-suite.git
+git clone https://github.com/stargazerZJ/sjtu-suite.git
 cd sjtu-suite
 
 # Create venv and install dependencies
@@ -18,14 +18,29 @@ uv pip install -e .
 
 ## Configuration
 
-Create a `credentials.json` file in the project root:
+Create a `credentials.json` file in the project root. You are encouraged to use environment variables for sensitive data like passwords.
 
 ```json
 {
     "username": "your_jaccount",
-    "password": "your_password",
+    "password": {
+        "mode": "env",
+        "key": "JACCOUNT_PASSWORD"
+    },
     "room_id": "your_dorm_room_id",
     "door_access_token": "optional_api_token"
+}
+```
+
+If you prefer to store the password directly in the file (not recommended), use:
+
+```json
+{
+    ...
+    "password": {
+        "mode": "literal",
+        "key": "your_password_here"
+    }
 }
 ```
 

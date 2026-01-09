@@ -1,7 +1,9 @@
 import json
 import os
 from typing import Any, Optional
+from venv import logger
 from .config import get_project_root
+from .log import get_logger
 
 class CredentialProvider:
     """
@@ -9,6 +11,7 @@ class CredentialProvider:
     Handles loading credentials from JSON file and resolving environment variables.
     """
     def __init__(self, config_path: str = "credentials.json"):
+        self.logger = get_logger("CredentialProvider")
         self.config_path = get_project_root() / config_path
         self._data = self._load_data()
 
@@ -43,7 +46,23 @@ class CredentialProvider:
     @property
     def password(self) -> Optional[str]:
         """Get JAccount password."""
-        return self.get("password")
+        password_block = self.get("password")
+        # Warn if password uses the old format (direct string)
+        if isinstance(password_block, str):
+            self.logger.warning(
+                "Storing password as plain string is deprecated. "
+                "See README.md for new format, preferably using environment variables."
+            )
+            return password_block
+        if isinstance(password_block, dict):
+            if password_block.get("mode") == "literal":
+                return password_block.get("value")
+            elif password_block.get("mode") == "env":
+                env_key = password_block.get("key")
+                if env_key:
+                    return os.environ.get(env_key)
+        self.logger.warning("Password not found or improperly configured.")
+        return None
 
     @property
     def room_id(self) -> Optional[str]:
