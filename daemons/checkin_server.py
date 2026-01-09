@@ -12,7 +12,7 @@ import requests
 
 from sjtusuite.auth import JACLogin
 from sjtusuite.clients.checkin import CheckinClient
-from sjtusuite.core.config import load_credentials
+from sjtusuite.core.credentials import credentials
 from sjtusuite.servers.base import get_client_ip
 
 
@@ -21,17 +21,14 @@ logging.basicConfig(filename='checkin_access.log', level=logging.INFO)
 
 CORS(app)
 
-# Load credentials
-credentials = load_credentials()
-
 # Initialize JACLogin and CheckinClient
-jac_login = JACLogin(credentials['username'], credentials['password'])
+jac_login = JACLogin(credentials.username, credentials.password)
 checkin_client = CheckinClient(jac_login)
 
 # Configuration
 CONFIG = {
-    'poll_url': credentials.get('checkin_poll_url', 'http://localhost:8080/checkin-data'),
-    'poll_interval': credentials.get('checkin_poll_interval', 1.0),  # seconds
+    'poll_url': credentials.checkin_poll_url,
+    'poll_interval': credentials.checkin_poll_interval,
     'enabled': True
 }
 

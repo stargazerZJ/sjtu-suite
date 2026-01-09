@@ -29,7 +29,7 @@ from rich.text import Text
 from sjtusuite.auth import JACLogin
 from sjtusuite.clients.canvas import CanvasClient
 from sjtusuite.clients.video import VideoClient
-from sjtusuite.core.config import load_credentials
+from sjtusuite.core.credentials import credentials
 
 
 console = Console()
@@ -37,8 +37,7 @@ console = Console()
 
 def create_clients():
     """Initialize and return authenticated clients."""
-    credentials = load_credentials()
-    jac_login = JACLogin(credentials['username'], credentials['password'])
+    jac_login = JACLogin(credentials.username, credentials.password)
     canvas_client = CanvasClient(jac_login)
     video_client = VideoClient(jac_login)
     return canvas_client, video_client

@@ -1,6 +1,4 @@
 """Centralized configuration loading for SJTU Suite."""
-import json
-import os
 from pathlib import Path
 
 
@@ -23,11 +21,6 @@ def get_sessions_dir():
     return sessions_dir
 
 
-def load_credentials():
-    """Load credentials from credentials.json."""
-    cred_path = get_project_root() / "credentials.json"
-    with open(cred_path, "r") as f:
-        return json.load(f)
 
 
 def get_password_file():

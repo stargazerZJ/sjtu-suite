@@ -12,22 +12,20 @@ from datetime import datetime
 
 from sjtusuite.auth import JACLogin
 from sjtusuite.clients.door import DoorClient
-from sjtusuite.core.config import load_credentials, get_project_root
+from sjtusuite.core.config import get_project_root
+from sjtusuite.core.credentials import credentials
 from sjtusuite.servers.base import get_client_ip
 
 
 app = Flask(__name__)
 logging.basicConfig(filename='door_access.log', level=logging.INFO)
 
-# Load credentials
-credentials = load_credentials()
-
 # Initialize DoorClient and JACLogin
-jac_login = JACLogin(credentials['username'], credentials['password'])
-door_client = DoorClient(credentials['room_id'], jac_login)
+jac_login = JACLogin(credentials.username, credentials.password)
+door_client = DoorClient(credentials.room_id, jac_login)
 
 # Your predefined token (ideally should be in Env Variable)
-ACCESS_TOKEN = credentials.get('door_access_token', str(uuid.uuid4()))
+ACCESS_TOKEN = credentials.door_access_token or str(uuid.uuid4())
 
 
 @app.route('/open', methods=['POST'])

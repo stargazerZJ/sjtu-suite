@@ -15,7 +15,7 @@ from rich.table import Table
 
 from sjtusuite.auth import JACLogin
 from sjtusuite.clients.pe import PEClient
-from sjtusuite.core.config import load_credentials
+from sjtusuite.core.credentials import credentials
 
 
 console = Console()
@@ -23,8 +23,7 @@ console = Console()
 
 def create_client():
     """Initialize and return authenticated PE client."""
-    credentials = load_credentials()
-    jac_login = JACLogin(credentials['username'], credentials['password'])
+    jac_login = JACLogin(credentials.username, credentials.password)
     return PEClient(jac_login)
 
 
