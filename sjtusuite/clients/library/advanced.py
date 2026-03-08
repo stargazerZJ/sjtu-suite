@@ -4,8 +4,8 @@ from typing import Callable
 
 from apscheduler.job import Job
 from apscheduler.schedulers.background import BackgroundScheduler
-from jac_login import JACLogin
-from library_seat_client import ZoneInfo, ReservationInfo, LibrarySeatClient
+from sjtusuite.auth import JACLogin
+from .base import ZoneInfo, ReservationInfo, LibrarySeatClient
 
 
 class ReservationCache:
@@ -141,7 +141,7 @@ class LibrarySeatAdvancedClient(LibrarySeatClient):
 
 if __name__ == "__main__":
 
-    from jac_login import get_test_jac_login
+    from sjtusuite.auth import get_test_jac_login
 
     jac_login = get_test_jac_login()
 

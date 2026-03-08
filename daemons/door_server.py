@@ -1,37 +1,33 @@
+"""Door opening daemon - Flask server for remote door control."""
 import argparse
 from flask import Flask, request, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-import json
 import logging
-import os
 import uuid
 import hmac
 from datetime import datetime
-from jac_login import JACLogin
-from door_client import DoorClient
 
+from sjtusuite.auth import JACLogin
+from sjtusuite.clients.door import DoorClient
+from sjtusuite.core.config import get_project_root
+from sjtusuite.core.credentials import credentials
+from sjtusuite.servers.base import get_client_ip
 
 app = Flask(__name__)
-logging.basicConfig(filename='access.log', level=logging.INFO)
-
-# Load credentials
-with open('credentials.json', 'r') as f:
-    credentials = json.load(f)
+logging.basicConfig(filename='door_access.log', level=logging.INFO)
 
 # Initialize DoorClient and JACLogin
-jac_login = JACLogin(credentials['username'], credentials['password'])
-door_client = DoorClient(credentials['room_id'], jac_login)
+jac_login = JACLogin(credentials.username, credentials.password)
+if not credentials.room_id:
+    logger = logging.getLogger('door_server')
+    logger.error("Room ID is not configured in credentials.")
+    exit(1)
+door_client = DoorClient(credentials.room_id, jac_login)
 
 # Your predefined token (ideally should be in Env Variable)
-# ACCESS_TOKEN = os.getenv('DOOR_ACCESS_TOKEN') or str(uuid.uuid4())
-ACCESS_TOKEN = credentials['door_access_token']
+ACCESS_TOKEN = credentials.door_access_token or str(uuid.uuid4())
 
-# Function to get client IP
-def get_client_ip():
-    if request.headers.getlist("X-Forwarded-For"):
-        return request.headers.getlist("X-Forwarded-For")[0]
-    return request.remote_addr
 
 @app.route('/open', methods=['POST'])
 def open_door():
@@ -57,6 +53,7 @@ def refresh_session():
     except Exception as e:
         app.logger.error(f"{datetime.now()}: Scheduled session refresh failed: {e}")
 
+
 @app.after_request
 def log_request(response):
     if response.status_code == 404:
@@ -65,22 +62,22 @@ def log_request(response):
         )
     return response
 
+
 # Schedule the session refresh every hour
 scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
 cron_trigger = CronTrigger(timezone="Asia/Shanghai", minute='0,30')
 scheduler.add_job(refresh_session, trigger=cron_trigger)
 
 
-# # Shut down the scheduler when exiting the app
-# @app.teardown_appcontext
-# def shutdown_scheduler(exception=None):
-#     scheduler.shutdown()
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Run Flask app with specified port.')
+def main():
+    parser = argparse.ArgumentParser(description='Run Door Flask app with specified port.')
     parser.add_argument('-p', '--port', type=int, default=5000, help='Port to listen on (default: 5000)')
 
     door_client.login()
     scheduler.start()
     args = parser.parse_args()
     app.run(debug=False, port=args.port)
+
+
+if __name__ == '__main__':
+    main()

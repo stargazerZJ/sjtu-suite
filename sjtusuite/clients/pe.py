@@ -4,11 +4,12 @@ import json
 import uuid
 import os
 from enum import Enum
-from oauth_client import OAuthClientBase
-from jac_login import JACLogin
+from sjtusuite.auth import OAuthClientBase, JACLogin
+from sjtusuite.core.config import get_project_root
 from datetime import datetime, timezone, timedelta
 from time import sleep
 from pathlib import Path
+
 
 class LocationType(Enum):
     """Predefined location types for running"""
@@ -19,6 +20,7 @@ class LocationType(Enum):
         self.start_lat = start_lat
         self.end_lon = end_lon
         self.end_lat = end_lat
+
 
 class PEClient(OAuthClientBase):
     """Client for SJTU PE system running"""
@@ -109,7 +111,7 @@ class PEClient(OAuthClientBase):
             self.logger.error("Failed to get point rule, aborting upload.")
             return point_rule_response
 
-        sleep(25)
+        sleep(2)
 
         json_payload_string = json.dumps([data], ensure_ascii=False)
         
@@ -129,11 +131,11 @@ class PEClient(OAuthClientBase):
 
         return response
 
-    def load_points_data(self, points_file="points.json"):
+    def load_points_data(self, points_file="data/points.json"):
         """Load points data from JSON file"""
         try:
-            script_dir = Path(os.path.dirname(os.path.abspath(__file__)))
-            file_path = script_dir / points_file
+            # Use project root instead of script directory
+            file_path = get_project_root() / points_file
             
             with open(file_path, "r") as f:
                 points_data = json.load(f)
@@ -258,26 +260,20 @@ class PEClient(OAuthClientBase):
         start_location = points[0]["location"].split(",")
         lon, lat = float(start_location[0]), float(start_location[1])
         
-        # export result data to JSON file
-        # output_file = "result.json"
-        # with open(output_file, "w") as f:
-        #     json.dump(result_data, f, indent=2, ensure_ascii=False)
-        # self.logger.info(f"Result data saved to {output_file}")
-
         self.logger.info(f"Generated result data with {len(points)} points")
         response = self.upload_result(result_data[0], lon, lat)
         return response
 
 
 if __name__ == "__main__":
-    from jac_login import get_test_jac_login
+    from sjtusuite.auth import get_test_jac_login
     
     def demo_simulate_running():
         """Demo function for one-click simulation"""
         jac_login = get_test_jac_login()
         client = PEClient(jac_login)
         
-        nowtime = datetime.now() - timedelta(days=16)
+        nowtime = datetime.now() - timedelta(minutes=30)
         client.simulate_running(run_time=nowtime, n=10000)
 
     demo_simulate_running()
