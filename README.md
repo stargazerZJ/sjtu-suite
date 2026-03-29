@@ -28,7 +28,20 @@ Create a `credentials.json` file in the project root. You can start from `creden
         "key": "JACCOUNT_PASSWORD"
     },
     "room_id": "your_dorm_room_id",
-    "door_access_token": "optional_api_token"
+    "door_access_token": "optional_api_token",
+    "notifications": {
+        "ntfy": {
+            "enabled": true,
+            "server": "https://ntfy.sh",
+            "topic": "your-unique-topic",
+            "token": {
+                "mode": "env",
+                "key": "NTFY_TOKEN"
+            },
+            "tags": ["sjtu", "sports"],
+            "priority": "high"
+        }
+    }
 }
 ```
 
@@ -43,6 +56,8 @@ If you prefer to store the password directly in the file (not recommended), use:
     }
 }
 ```
+
+`notifications.ntfy` is optional. When configured, `sjtu-sportsd` sends an `ntfy.sh` push notification after it successfully creates a sports reservation order. The notifier lives in [sjtusuite/notifications/ntfy.py](/Users/theunknownthing/sjtu-suite/sjtusuite/notifications/ntfy.py), so other clients and daemons can reuse it too.
 
 ## Quick Start
 

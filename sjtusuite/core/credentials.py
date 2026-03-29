@@ -32,6 +32,27 @@ class CredentialProvider:
                 return os.environ.get(env_key)
         return value
 
+    def _resolve_secret_block(self, value: Any, *, label: str) -> Optional[str]:
+        """Resolve a secret block that may be literal or environment-backed."""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, dict):
+            if value.get("mode") == "literal":
+                if value.get("value"):
+                    return value.get("value")
+                if value.get("key"):
+                    self.logger.warning(
+                        "%s uses 'key' with mode='literal'. "
+                        "Treating it as a legacy literal value; rename it to 'value'.",
+                        label,
+                    )
+                    return value.get("key")
+            elif value.get("mode") == "env":
+                env_key = value.get("key")
+                if env_key:
+                    return os.environ.get(env_key)
+        return None
+
     def get(self, key: str, default: Any = None) -> Any:
         """Get a credential value by key."""
         val = self._data.get(key, default)
@@ -46,27 +67,15 @@ class CredentialProvider:
     def password(self) -> Optional[str]:
         """Get JAccount password."""
         password_block = self.get("password")
-        # Warn if password uses the old format (direct string)
         if isinstance(password_block, str):
             self.logger.warning(
                 "Storing password as plain string is deprecated. "
                 "See README.md for new format, preferably using environment variables."
             )
             return password_block
-        if isinstance(password_block, dict):
-            if password_block.get("mode") == "literal":
-                if password_block.get("value"):
-                    return password_block.get("value")
-                if password_block.get("key"):
-                    self.logger.warning(
-                        "Password block uses 'key' with mode='literal'. "
-                        "Treating it as a legacy literal password; rename it to 'value'."
-                    )
-                    return password_block.get("key")
-            elif password_block.get("mode") == "env":
-                env_key = password_block.get("key")
-                if env_key:
-                    return os.environ.get(env_key)
+        password = self._resolve_secret_block(password_block, label="Password block")
+        if password:
+            return password
         self.logger.warning("Password not found or improperly configured.")
         return None
 
@@ -89,6 +98,33 @@ class CredentialProvider:
     def checkin_poll_interval(self) -> float:
         """Get poll interval for Checkin server."""
         return self.get("checkin_poll_interval", 1.0)
+
+    @property
+    def ntfy_config(self) -> dict[str, Any]:
+        """Get ntfy notification settings for daemon reuse."""
+        notifications = self.get("notifications", {})
+        if not isinstance(notifications, dict):
+            return {}
+        ntfy = notifications.get("ntfy", {})
+        if not isinstance(ntfy, dict):
+            return {}
+
+        raw_tags = self._resolve_value(ntfy.get("tags", []))
+        if isinstance(raw_tags, str):
+            tags = [item.strip() for item in raw_tags.split(",") if item.strip()]
+        elif isinstance(raw_tags, list):
+            tags = [str(item).strip() for item in raw_tags if str(item).strip()]
+        else:
+            tags = []
+
+        return {
+            "enabled": bool(ntfy.get("enabled", True)),
+            "server": str(self._resolve_value(ntfy.get("server", "https://ntfy.sh")) or "https://ntfy.sh").strip(),
+            "topic": str(self._resolve_value(ntfy.get("topic", "")) or "").strip(),
+            "token": self._resolve_secret_block(ntfy.get("token"), label="Ntfy token"),
+            "tags": tags,
+            "priority": self._resolve_value(ntfy.get("priority")),
+        }
 
 # Singleton instance
 credentials = CredentialProvider()
