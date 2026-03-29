@@ -18,7 +18,7 @@ uv pip install -e .
 
 ## Configuration
 
-Create a `credentials.json` file in the project root. You are encouraged to use environment variables for sensitive data like passwords.
+Create a `credentials.json` file in the project root. You can start from `credentials.json.example`. You are encouraged to use environment variables for sensitive data like passwords.
 
 ```json
 {
