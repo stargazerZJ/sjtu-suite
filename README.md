@@ -93,6 +93,10 @@ sjtu-sports venues
 sjtu-sports --from-browser venues         # Reuse the current Playwright browser login
 sjtu-sports availability <venue_id> --motion 乒乓球
 sjtu-sports reserve <venue_id> --motion 乒乓球 --date 2026-03-29 --field 场地10 --time 19:00-20:00
+
+# Sports reservation daemon dashboard
+sjtu-sportsd
+sjtu-sportsd --from-browser               # Test the daemon against the current Playwright browser login
 ```
 
 ### As Daemons (Long-Running Services)
@@ -103,6 +107,9 @@ sjtu-door -p 5000
 
 # Auto-checkin polling daemon
 sjtu-checkin -p 5002 --poll-url http://your-source/checkin-data
+
+# Sports reservation daemon
+sjtu-sportsd -p 5003
 ```
 
 ## Project Structure
@@ -222,6 +229,15 @@ If you have already logged in through the managed Playwright browser, the sports
 sjtu-sports --from-browser detail <venue_id>
 sjtu-sports --from-browser reserve <venue_id> --motion 乒乓球 --date 2026-03-30 --field 场地2 --time 12:00-13:00
 ```
+
+The daemon exposes a web dashboard where you can create reservation jobs, inspect recent attempts, and manually trigger a dry run or a real booking attempt:
+
+```bash
+sjtu-sportsd -p 5003
+# open http://localhost:5003/
+```
+
+By default the daemon uses `credentials.json` for long-running login refresh. `sjtu-sportsd --from-browser` is also supported for live testing while the managed Playwright browser is logged in.
 
 ## Environment
 

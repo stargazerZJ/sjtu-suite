@@ -20,6 +20,7 @@ dependencies = [
 # Daemon entry points (long-running services)
 sjtu-door = "daemons.door_server:main"
 sjtu-checkin = "daemons.checkin_server:main"
+sjtu-sportsd = "daemons.sports_server:main"
 # CLI entry points (interactive tools)
 sjtu-pe = "sjtusuite.cli.pe:main"
 sjtu-sports = "sjtusuite.cli.sports:main"
