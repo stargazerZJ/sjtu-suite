@@ -1,7 +1,6 @@
 import json
 import os
 from typing import Any, Optional
-from venv import logger
 from .config import get_project_root
 from .log import get_logger
 
@@ -56,7 +55,14 @@ class CredentialProvider:
             return password_block
         if isinstance(password_block, dict):
             if password_block.get("mode") == "literal":
-                return password_block.get("value")
+                if password_block.get("value"):
+                    return password_block.get("value")
+                if password_block.get("key"):
+                    self.logger.warning(
+                        "Password block uses 'key' with mode='literal'. "
+                        "Treating it as a legacy literal password; rename it to 'value'."
+                    )
+                    return password_block.get("key")
             elif password_block.get("mode") == "env":
                 env_key = password_block.get("key")
                 if env_key:

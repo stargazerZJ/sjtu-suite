@@ -1,5 +1,5 @@
 import requests
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, urljoin
 import re
 import time
 import io
@@ -22,6 +22,19 @@ class JACLogin(OAuthClientBase):
         self.login_base_url = "https://jaccount.sjtu.edu.cn"
         super().__init__("JACLogin", session_file)
 
+    def _ensure_credentials(self):
+        missing = []
+        if not self.username:
+            missing.append("username")
+        if not self.password:
+            missing.append("password")
+        if missing:
+            raise ValueError(
+                "Missing JAccount credentials: "
+                + ", ".join(missing)
+                + ". Check credentials.json or the referenced environment variables."
+            )
+
     def login(self, auth_url: str):
         """
         Perform the JAccount OAuth2 login flow.
@@ -32,6 +45,7 @@ class JACLogin(OAuthClientBase):
         :param auth_url: The authorization URL obtained from the initial request.
         :return: The final redirect URL after successful login.
         """
+        self._ensure_credentials()
         # The OAuth2 redirect flow:
         # /oauth2/authorize -> /jaccount/jalogin -> (post to /jaccount/ulogin and refresh if not logged in)
         # -> /oauth2/authorize -> final redirect url
@@ -43,10 +57,18 @@ class JACLogin(OAuthClientBase):
         # Navigate to login page
         login_url = self.session.get(auth_url, allow_redirects=False).headers["Location"]
 
-        auth_url = self.do_login(login_url)
-
-        final_redirect_response = self.session.get(auth_url, allow_redirects=False)
-        final_redirect_url = final_redirect_response.headers["Location"]
+        current_url = urljoin(self.login_base_url, self.do_login(login_url))
+        final_redirect_url = current_url
+        for _ in range(10):
+            if not current_url.startswith(self.login_base_url):
+                final_redirect_url = current_url
+                break
+            redirect_response = self.session.get(current_url, allow_redirects=False)
+            location = redirect_response.headers.get("Location")
+            if not location:
+                raise ValueError("JAccount login did not produce a redirect target.")
+            current_url = urljoin(current_url, location)
+            final_redirect_url = current_url
         self.save_session()
         self.logger.debug(f"Logged in as {self.username}.")
         return final_redirect_url
@@ -107,7 +129,7 @@ class JACLogin(OAuthClientBase):
     def do_login(self, login_url, retry_count=3):
         """Perform the login process."""
 
-        for i in range(retry_count + 1):
+        for i in range(retry_count):
             login_page = self.session.get(login_url, allow_redirects=False)
             if login_page.status_code == 302 and login_page.headers[
                 "Location"
@@ -115,7 +137,7 @@ class JACLogin(OAuthClientBase):
                 # login is successful
                 if i > 0:
                     self.logger.info(f"Login session established or refreshed, user: {self.username}")
-                return login_page.headers["Location"]
+                return urljoin(self.login_base_url, login_page.headers["Location"])
             self.logger.debug(f"Login attempt {i + 1}/{retry_count}")
             params = extract_auth_params(login_page.url)
             match = re.search(r'uuid: "([0-9a-f-]+)"', login_page.text)
@@ -125,6 +147,7 @@ class JACLogin(OAuthClientBase):
                         continue
                     else:
                         raise ValueError("2FA failed.")
+                raise ValueError("Could not find captcha UUID on the JAccount login page.")
             uuid = match.group(1)
             captcha = self.get_captcha(uuid, login_page.url)
             captcha = self.solve_captcha(captcha)
@@ -136,6 +159,7 @@ class JACLogin(OAuthClientBase):
                     "pass": self.password,
                     "uuid": uuid,
                     "captcha": captcha,
+                    "lt": "p",
                     **params,
                 },
                 headers={"accept-language": "zh-CN"},
@@ -143,10 +167,20 @@ class JACLogin(OAuthClientBase):
             )
             # if the login is successful or happens too quickly, the response will be html. Otherwise, it will be json.
             # e.g. {"errno":1,"error":"请正确填写验证码","code":"WRONG_CAPTCHA","url":null}
-            if response.headers.get("Content-Type", "") == "application/json" and response.json().get("errno") == 1:
-                self.logger.warning(f"Login error: {response.json()['error']}")
-                if response.json()["code"] == "WRONG_USER_OR_PASSWORD":
-                    raise ValueError("Invalid username or password.")
+            if response.headers.get("Content-Type", "").startswith("application/json"):
+                response_json = response.json()
+                if response_json.get("errno") == 0 and response_json.get("url"):
+                    return urljoin(self.login_base_url, response_json["url"])
+                if response_json.get("errno") == 1:
+                    self.logger.warning(f"Login error: {response_json['error']}")
+                    if response_json["code"] == "WRONG_USER_OR_PASSWORD":
+                        raise ValueError("Invalid username or password.")
+            elif response.status_code in (301, 302) and response.headers.get("Location", "").startswith(
+                self.login_base_url + "/oauth2/authorize"
+            ):
+                return urljoin(self.login_base_url, response.headers["Location"])
+            elif response.status_code in (301, 302):
+                self.logger.warning("Login was rejected; JAccount redirected back to the login page.")
         raise ValueError(f"Failed to login after {retry_count} attempts.")
 
     def get_captcha(self, uuid, referer):

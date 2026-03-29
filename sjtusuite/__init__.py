@@ -2,3 +2,4 @@
 __version__ = "0.2.0"
 
 from .auth import JACLogin, OAuthClientBase, get_test_jac_login
+from .clients import SportsReservationClient
