@@ -39,7 +39,7 @@ If you prefer to store the password directly in the file (not recommended), use:
     ...
     "password": {
         "mode": "literal",
-        "key": "your_password_here"
+        "value": "your_password_here"
     }
 }
 ```
@@ -50,7 +50,7 @@ If you prefer to store the password directly in the file (not recommended), use:
 
 ```python
 from sjtusuite import JACLogin
-from sjtusuite.clients import DoorClient, PEClient, VideoClient
+from sjtusuite.clients import DoorClient, PEClient, SportsReservationClient, VideoClient
 
 # Initialize authentication
 jac_login = JACLogin(username="xxx", password="xxx")
@@ -67,6 +67,11 @@ pe.simulate_running()
 # Use video client
 video = VideoClient(jac_login)
 sessions = video.list_sessions(course_url)
+
+# Use sports client
+sports = SportsReservationClient(jac_login)
+sports.login()
+venues, total = sports.list_venues(venue_name="南区")
 ```
 
 ### As CLI Tools
@@ -82,6 +87,12 @@ sjtu-pe run                    # Default 2km run
 sjtu-pe run -d 3.0             # Custom distance
 sjtu-pe run --dry-run          # Preview without uploading
 sjtu-pe status                 # Check login status
+
+# Sports venue reservation
+sjtu-sports venues
+sjtu-sports --from-browser venues         # Reuse the current Playwright browser login
+sjtu-sports availability <venue_id> --motion 乒乓球
+sjtu-sports reserve <venue_id> --motion 乒乓球 --date 2026-03-29 --field 场地10 --time 19:00-20:00
 ```
 
 ### As Daemons (Long-Running Services)
@@ -102,6 +113,7 @@ sjtu-suite/
 │   ├── auth/             # JAccount OAuth authentication
 │   ├── cli/              # CLI tools (rich/click)
 │   │   ├── pe.py         # PE running CLI
+│   │   ├── sports.py     # Sports reservation CLI
 │   │   └── video.py      # Video browser CLI
 │   ├── clients/          # Service clients
 │   │   ├── door.py       # Door opening
@@ -109,6 +121,7 @@ sjtu-suite/
 │   │   ├── checkin.py    # Course checkin
 │   │   ├── video.py      # Video download
 │   │   ├── canvas.py     # Canvas LMS
+│   │   ├── sports.py     # Sports reservation
 │   │   └── library/      # Library seat reservation
 │   ├── core/             # Utilities (logging, config)
 │   └── servers/          # Flask server utilities
@@ -129,6 +142,7 @@ sjtu-suite/
 | `VideoClient` | Download lecture video recordings |
 | `CanvasClient` | Access Canvas LMS courses and tools |
 | `LibrarySeatClient` | Reserve and manage library seats |
+| `SportsReservationClient` | Discover, preview, and submit sports venue reservations |
 
 ## API Examples
 
@@ -182,10 +196,37 @@ sessions = video.get_sessions()
 video.download_session(sessions[0], output_dir="./videos")
 ```
 
+### Sports Reservation
+
+```python
+from sjtusuite.clients import SportsReservationClient
+from sjtusuite import JACLogin
+
+jac = JACLogin("user", "pass")
+sports = SportsReservationClient(jac)
+
+sports.login()
+venues, total = sports.list_venues(venue_name="南区")
+preview = sports.preview_personal_order(
+    venue_id=venues[0].venue_id,
+    motion="乒乓球",
+    date="2026-03-29",
+    field_names=["场地10"],
+    time_slots=["19:00-20:00"],
+)
+```
+
+If you have already logged in through the managed Playwright browser, the sports CLI can reuse that authenticated browser session instead of `credentials.json`:
+
+```bash
+sjtu-sports --from-browser detail <venue_id>
+sjtu-sports --from-browser reserve <venue_id> --motion 乒乓球 --date 2026-03-30 --field 场地2 --time 12:00-13:00
+```
+
 ## Environment
 
 - Python 3.12+
-- Dependencies: Flask, requests, APScheduler, flask-cors, click, rich
+- Dependencies: Flask, requests, APScheduler, flask-cors, click, rich, pycryptodome
 
 ## License
 
