@@ -551,559 +551,408 @@ def create_dashboard_html() -> str:
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Sports Reservation Daemon</title>
   <style>
-    :root {
-      --bg: #f3efe4;
-      --paper: rgba(255, 252, 245, 0.88);
-      --ink: #1f1f1f;
-      --muted: #6a6257;
-      --line: rgba(40, 31, 18, 0.12);
-      --accent: #b33a21;
-      --accent-2: #d97b29;
-      --good: #1f7a4c;
-      --warn: #9a5d00;
-      --bad: #a22c29;
-      --shadow: 0 24px 60px rgba(65, 44, 18, 0.12);
-      --font: "SF Pro Display", "Helvetica Neue", Helvetica, Arial, sans-serif;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: var(--font);
-      color: var(--ink);
-      background:
-        radial-gradient(circle at top left, rgba(217, 123, 41, 0.28), transparent 28%),
-        radial-gradient(circle at top right, rgba(179, 58, 33, 0.18), transparent 24%),
-        linear-gradient(180deg, #fbf6eb 0%, #efe5d3 100%);
-    }
-    .shell {
-      max-width: 1200px;
-      margin: 0 auto;
-      padding: 28px 18px 42px;
-    }
-    .hero {
-      display: grid;
-      grid-template-columns: 1.4fr 1fr;
-      gap: 18px;
-      margin-bottom: 18px;
-    }
-    .card {
-      background: var(--paper);
-      backdrop-filter: blur(10px);
-      border: 1px solid var(--line);
-      border-radius: 24px;
-      box-shadow: var(--shadow);
-      padding: 20px;
-    }
-    .title {
-      font-size: 32px;
-      font-weight: 700;
-      letter-spacing: -0.04em;
-      margin: 0 0 8px;
-    }
-    .subtitle {
-      margin: 0;
-      color: var(--muted);
-      font-size: 15px;
-      line-height: 1.6;
-    }
-    .pill-row {
-      display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
-      margin-top: 16px;
-    }
-    .pill {
-      border-radius: 999px;
-      padding: 10px 14px;
-      background: rgba(179, 58, 33, 0.08);
-      color: var(--accent);
-      font-size: 13px;
-      font-weight: 600;
-    }
-    .grid {
-      display: grid;
-      grid-template-columns: 1.1fr 0.9fr;
-      gap: 18px;
-    }
-    .section-title {
-      margin: 0 0 14px;
-      font-size: 14px;
-      text-transform: uppercase;
-      letter-spacing: 0.12em;
-      color: var(--muted);
-    }
-    label {
-      display: block;
-      font-size: 13px;
-      font-weight: 600;
-      margin-bottom: 6px;
-    }
-    input, select, button, textarea {
-      font: inherit;
-    }
-    input, select {
-      width: 100%;
-      border: 1px solid rgba(62, 45, 21, 0.16);
-      border-radius: 14px;
-      padding: 11px 12px;
-      background: white;
-    }
-    .form-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 12px;
-    }
-    .full {
-      grid-column: 1 / -1;
-    }
-    .slot-grid {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 8px;
-      margin-top: 8px;
-    }
-    .slot-grid label {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 8px 10px;
-      margin: 0;
-      border-radius: 12px;
-      background: rgba(217, 123, 41, 0.08);
-      font-weight: 500;
-      cursor: pointer;
-    }
-    .toolbar {
-      display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
-      align-items: center;
-    }
-    button {
-      border: 0;
-      border-radius: 999px;
-      padding: 11px 16px;
-      background: var(--accent);
-      color: white;
-      font-weight: 700;
-      cursor: pointer;
-    }
-    button.secondary {
-      background: white;
-      color: var(--ink);
-      border: 1px solid rgba(62, 45, 21, 0.16);
-    }
-    button.warn { background: var(--accent-2); }
-    button.good { background: var(--good); }
-    button.bad { background: var(--bad); }
-    .jobs {
-      display: grid;
-      gap: 12px;
-      margin-top: 14px;
-    }
-    .job {
-      border: 1px solid var(--line);
-      border-radius: 18px;
-      padding: 16px;
-      background: rgba(255, 255, 255, 0.8);
-    }
-    .job-head {
-      display: flex;
-      justify-content: space-between;
-      gap: 12px;
-      align-items: start;
-    }
-    .job-name {
-      margin: 0;
-      font-size: 20px;
-      font-weight: 700;
-    }
-    .meta {
-      margin-top: 8px;
-      color: var(--muted);
-      font-size: 14px;
-      line-height: 1.6;
-    }
-    .status {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      border-radius: 999px;
-      padding: 7px 12px;
-      font-size: 12px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      background: rgba(31, 122, 76, 0.1);
-      color: var(--good);
-    }
-    .status.waiting_window, .status.no_slots, .status.preview_ready { background: rgba(154, 93, 0, 0.12); color: var(--warn); }
-    .status.submit_failed, .status.expired, .status.captcha_required { background: rgba(162, 44, 41, 0.12); color: var(--bad); }
-    .actions {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      margin-top: 12px;
-    }
-    .history {
-      display: grid;
-      gap: 10px;
-      margin-top: 14px;
-    }
-    .history-item {
-      border-left: 4px solid rgba(31, 122, 76, 0.5);
-      padding: 10px 12px;
-      background: rgba(255, 255, 255, 0.74);
-      border-radius: 0 14px 14px 0;
-    }
-    .history-item.bad { border-left-color: rgba(162, 44, 41, 0.55); }
-    .muted { color: var(--muted); font-size: 13px; }
-    .info-box {
-      border-radius: 16px;
-      padding: 14px;
-      background: rgba(217, 123, 41, 0.08);
-      color: var(--muted);
-      line-height: 1.6;
-    }
-    .availability-list {
-      display: grid;
-      gap: 12px;
-      margin-top: 12px;
-    }
-    .availability-day {
-      border: 1px solid var(--line);
-      border-radius: 16px;
-      padding: 12px;
-      background: rgba(255, 255, 255, 0.72);
-    }
-    .availability-head {
-      display: flex;
-      justify-content: space-between;
-      gap: 12px;
-      align-items: baseline;
-      margin-bottom: 8px;
-    }
-    .availability-title {
-      font-weight: 700;
-      color: var(--ink);
-    }
-    .slot-pills {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin-top: 8px;
-    }
-    .slot-pill {
-      display: inline-flex;
-      gap: 6px;
-      align-items: center;
-      border-radius: 999px;
-      padding: 7px 10px;
-      background: rgba(31, 122, 76, 0.1);
-      color: var(--good);
-      font-size: 13px;
-      font-weight: 600;
-    }
-    @media (max-width: 960px) {
-      .hero, .grid { grid-template-columns: 1fr; }
-      .form-grid, .slot-grid { grid-template-columns: 1fr; }
-    }
+:root {
+    --bg: #0a0a0f;
+    --card-bg: #1a1a1a;
+    --text: #eee;
+    --sub-text: #888;
+    --accent: #3fb950;
+    --warn: #d29922;
+    --error: #f85149;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    font-family: var(--font);
+    background: var(--bg);
+    color: var(--text);
+    padding: 2rem 1rem;
+    line-height: 1.5;
+}
+.wrap { max-width: 540px; margin: 0 auto; }
+
+/* Header & Live Indicator */
+header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 2rem; }
+h1 { font-size: 1.25rem; font-weight: 600; letter-spacing: -0.5px; }
+.status-dot {
+    font-size: 0.75rem; color: var(--accent); display: flex; align-items: center; gap: 6px;
+    background: rgba(63, 185, 80, 0.1); padding: 4px 10px; border-radius: 20px;
+}
+.pulse { display: inline-block; width: 6px; height: 6px; background: currentColor; border-radius: 50%; animation: blink 2s infinite; }
+
+/* Sections */
+h2 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px; color: var(--sub-text); margin: 0 0 1rem 0; font-weight: 600; }
+.section { margin-bottom: 2.5rem; }
+
+/* Hero Status Card */
+.hero {
+    background: var(--card-bg);
+    padding: 1.5rem;
+    border-radius: 12px;
+    text-align: center;
+}
+.hero-status { font-size: 1.1rem; margin-bottom: 0.25rem; font-weight: bold; }
+.hero-sub { color: var(--sub-text); font-size: 0.8rem; font-family: monospace; }
+
+/* Badges row */
+.badges { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin-top: 0.75rem; }
+.badge {
+    font-size: 0.7rem; padding: 3px 8px; border-radius: 12px;
+    background: rgba(63, 185, 80, 0.1); color: var(--accent); font-family: monospace;
+}
+
+/* Form */
+.form-section { margin-bottom: 2.5rem; }
+label { display: block; font-size: 0.8rem; font-weight: 600; color: var(--sub-text); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+input, select {
+    width: 100%; border: 1px solid #333; border-radius: 8px; padding: 10px;
+    background: var(--card-bg); color: var(--text); font: inherit; font-size: 0.9rem;
+    outline: none; -webkit-appearance: none; appearance: none;
+}
+select {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23888' d='M2 4l4 4 4-4'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 10px center; padding-right: 28px;
+}
+input[type="checkbox"] { width: auto; accent-color: var(--accent); }
+input:focus, select:focus { border-color: var(--accent); }
+.field-row { margin-bottom: 0.75rem; }
+.field-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+.inline-row { display: flex; gap: 8px; align-items: end; }
+.inline-row input { flex: 1; }
+
+/* Buttons */
+button {
+    border: 0; border-radius: 8px; padding: 8px 14px; font: inherit; font-size: 0.8rem;
+    font-weight: 600; cursor: pointer; transition: opacity 0.15s;
+}
+button:hover { opacity: 0.85; }
+.btn-primary { background: var(--accent); color: #000; }
+.btn-ghost { background: transparent; color: var(--sub-text); border: 1px solid #333; }
+.btn-warn { background: rgba(210, 153, 34, 0.15); color: var(--warn); border: 1px solid rgba(210, 153, 34, 0.3); }
+.btn-danger { background: rgba(248, 81, 73, 0.12); color: var(--error); border: 1px solid rgba(248, 81, 73, 0.25); }
+.btn-run { background: rgba(63, 185, 80, 0.12); color: var(--accent); border: 1px solid rgba(63, 185, 80, 0.25); }
+.btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 0.75rem; }
+
+/* Time-slot checkboxes */
+.slot-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.slot-grid label {
+    display: inline-flex; align-items: center; gap: 5px; font-size: 0.8rem; font-weight: 400;
+    color: var(--text); text-transform: none; letter-spacing: 0; margin: 0; padding: 5px 10px;
+    border-radius: 6px; background: rgba(255,255,255,0.04); cursor: pointer; white-space: nowrap;
+}
+.slot-grid label:hover { background: rgba(255,255,255,0.08); }
+
+/* Info box (availability) */
+.info-box {
+    border-radius: 8px; padding: 12px; margin-top: 0.75rem;
+    background: rgba(255,255,255,0.04); color: var(--sub-text); font-size: 0.85rem; line-height: 1.6;
+}
+
+/* Jobs List */
+.job {
+    background: var(--card-bg); border-radius: 10px; padding: 1rem; margin-bottom: 0.75rem;
+}
+.job-head { display: flex; justify-content: space-between; align-items: start; gap: 8px; }
+.job-name { font-size: 1rem; font-weight: 600; margin: 0; }
+.job-meta { color: var(--sub-text); font-size: 0.8rem; margin-top: 4px; line-height: 1.6; }
+.status-badge {
+    font-size: 0.65rem; padding: 3px 8px; border-radius: 12px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.5px; white-space: nowrap; flex-shrink: 0;
+}
+.st-success, .st-idle { background: rgba(63, 185, 80, 0.12); color: var(--accent); }
+.st-waiting_window, .st-no_slots, .st-preview_ready { background: rgba(210, 153, 34, 0.12); color: var(--warn); }
+.st-submit_failed, .st-expired, .st-captcha_required { background: rgba(248, 81, 73, 0.12); color: var(--error); }
+.job-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 0.75rem; }
+.job-actions button { font-size: 0.75rem; padding: 5px 10px; }
+
+/* History List */
+.list { display: flex; flex-direction: column; gap: 0.75rem; }
+.hist-item { display: flex; justify-content: space-between; align-items: baseline; font-size: 0.85rem; gap: 8px; }
+.hist-msg { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hist-time { color: var(--sub-text); font-size: 0.7rem; font-family: monospace; flex-shrink: 0; }
+.dot { margin-right: 6px; font-weight: bold; }
+.st-ok { color: var(--accent); }
+.st-fail { color: var(--error); }
+
+/* Availability */
+.avail-day { background: rgba(255,255,255,0.03); border-radius: 8px; padding: 10px; margin-bottom: 8px; }
+.avail-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; font-size: 0.85rem; }
+.avail-title { font-weight: 600; }
+.avail-slots { display: flex; flex-wrap: wrap; gap: 6px; }
+.avail-pill {
+    font-size: 0.75rem; padding: 3px 8px; border-radius: 10px;
+    background: rgba(63, 185, 80, 0.08); color: var(--accent);
+}
+
+/* Footer */
+.meta-footer {
+    border-top: 1px solid #222; padding-top: 1.5rem; margin-top: 1rem;
+    font-size: 0.7rem; color: var(--sub-text); display: flex; justify-content: space-between;
+}
+.empty { color: var(--sub-text); font-style: italic; font-size: 0.85rem; }
+
+@keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
   </style>
 </head>
 <body>
-  <div class="shell">
-    <div class="hero">
-      <section class="card">
-        <p class="section-title">Sports Reservation Daemon</p>
-        <h1 class="title">Noon Rush, Handled</h1>
-        <p class="subtitle">Configure venue jobs here, then let the daemon wake up at 12:00 every day, check the newly opened reservation window, and place the order automatically when the slot becomes available.</p>
-        <div class="pill-row">
-          <div class="pill" id="authMode">Auth mode: loading...</div>
-          <div class="pill" id="nextRun">Next noon run: loading...</div>
+<div class="wrap">
+    <header>
+        <h1>Sports Reservation</h1>
+        <div class="status-dot"><span class="pulse"></span> Daemon</div>
+    </header>
+
+    <!-- Status -->
+    <div class="section">
+        <h2>Status</h2>
+        <div class="hero">
+            <div class="hero-status" id="heroStatus">Loading…</div>
+            <div class="hero-sub" id="heroSub"></div>
+            <div class="badges">
+                <span class="badge" id="authMode">…</span>
+                <span class="badge" id="nextRun">…</span>
+            </div>
         </div>
-      </section>
-      <section class="card">
-        <p class="section-title">How It Works</p>
-        <div class="info-box">
-          1. Search and pick a venue.
-          <br>
-          2. Choose the motion type, date, and target time slots.
-          <br>
-          3. Optionally list preferred fields like 场地2,场地3.
-          <br>
-          4. The daemon retries during the noon opening window until it books successfully or times out.
-        </div>
-      </section>
     </div>
 
-    <div class="grid">
-      <section class="card">
-        <p class="section-title">Create Job</p>
-        <div class="form-grid">
-          <div class="full">
+    <!-- Create Job -->
+    <div class="form-section">
+        <h2>New Job</h2>
+        <div class="field-row">
             <label for="jobName">Job name</label>
-            <input id="jobName" placeholder="e.g. Monday noon ping pong">
-          </div>
-          <div class="full">
+            <input id="jobName" placeholder="e.g. Monday ping pong">
+        </div>
+        <div class="field-row">
             <label for="venueSearch">Venue search</label>
-            <div class="toolbar">
-              <input id="venueSearch" placeholder="Search venue name">
-              <button type="button" class="secondary" onclick="searchVenues()">Search</button>
+            <div class="inline-row">
+                <input id="venueSearch" placeholder="Search venue name">
+                <button type="button" class="btn-ghost" onclick="searchVenues()">Search</button>
             </div>
-          </div>
-          <div class="full">
+        </div>
+        <div class="field-row">
             <label for="venueSelect">Venue</label>
             <select id="venueSelect" onchange="loadVenueDetail()">
-              <option value="">Choose a venue</option>
+                <option value="">Choose a venue</option>
             </select>
-          </div>
-          <div>
-            <label for="motionSelect">Motion type</label>
-            <select id="motionSelect" onchange="loadAvailability()">
-              <option value="">Choose a motion type</option>
-            </select>
-          </div>
-          <div>
-            <label for="targetDate">Reservation date</label>
-            <input id="targetDate" type="date">
-          </div>
-          <div>
-            <label for="preferredFields">Preferred fields</label>
-            <input id="preferredFields" placeholder="Optional, comma separated">
-          </div>
-          <div>
-            <label for="retryWindow">Retry window (seconds)</label>
-            <input id="retryWindow" type="number" min="10" value="180">
-          </div>
-          <div>
-            <label for="retryInterval">Retry interval (seconds)</label>
-            <input id="retryInterval" type="number" min="1" value="5">
-          </div>
-          <div class="full">
+        </div>
+        <div class="field-pair">
+            <div class="field-row">
+                <label for="motionSelect">Motion type</label>
+                <select id="motionSelect" onchange="loadAvailability()">
+                    <option value="">Choose motion</option>
+                </select>
+            </div>
+            <div class="field-row">
+                <label for="targetDate">Date</label>
+                <input id="targetDate" type="date">
+            </div>
+        </div>
+        <div class="field-pair">
+            <div class="field-row">
+                <label for="preferredFields">Preferred fields</label>
+                <input id="preferredFields" placeholder="Optional, comma sep.">
+            </div>
+            <div class="field-row">
+                <label for="retryWindow">Retry window (s)</label>
+                <input id="retryWindow" type="number" min="10" value="180">
+            </div>
+        </div>
+        <div class="field-row">
             <label>Time slots</label>
             <div class="slot-grid" id="timeSlotGrid"></div>
-          </div>
         </div>
-        <div class="toolbar" style="margin-top:16px;">
-          <button type="button" onclick="createJob()">Save job</button>
-          <button type="button" class="secondary" onclick="refreshStatus()">Refresh</button>
+        <div class="btn-row">
+            <button type="button" class="btn-primary" onclick="createJob()">Save job</button>
+            <button type="button" class="btn-ghost" onclick="refreshStatus()">Refresh</button>
         </div>
-        <div id="availabilityBox" class="info-box" style="margin-top:16px;">Search a venue to load live motion types and visible dates.</div>
-      </section>
-
-      <section class="card">
-        <p class="section-title">Recent Attempts</p>
-        <div id="history" class="history"></div>
-      </section>
+        <div id="availabilityBox" class="info-box">Search a venue to see availability.</div>
     </div>
 
-    <section class="card" style="margin-top:18px;">
-      <p class="section-title">Jobs</p>
-      <div id="jobs" class="jobs"></div>
-    </section>
-  </div>
+    <!-- Jobs -->
+    <div class="section">
+        <h2>Jobs</h2>
+        <div id="jobs"></div>
+    </div>
 
-  <script>
-    const TIME_SLOTS = {{ time_slots | safe }};
-    let cachedVenues = [];
+    <!-- History -->
+    <div class="section">
+        <h2>Recent Activity</h2>
+        <div id="history" class="list"></div>
+    </div>
 
-    function escapeHtml(value) {
-      return String(value ?? "")
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;");
-    }
+    <div class="meta-footer">
+        <div>Sports Reservation Daemon</div>
+        <div>Auto-refresh 15s</div>
+    </div>
+</div>
 
-    function selectedTimeSlots() {
-      return [...document.querySelectorAll('input[name="timeSlot"]:checked')].map((item) => item.value);
-    }
+<script>
+const TIME_SLOTS = {{ time_slots | safe }};
+let cachedVenues = [];
 
-    function renderTimeSlots() {
-      const root = document.getElementById("timeSlotGrid");
-      root.innerHTML = TIME_SLOTS.map((slot) => `
-        <label><input type="checkbox" name="timeSlot" value="${slot}"> ${slot}</label>
-      `).join("");
-    }
+function esc(v) {
+    return String(v ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
 
-    async function api(path, options = {}) {
-      const response = await fetch(path, {
-        headers: { "Content-Type": "application/json" },
-        ...options,
-      });
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload.error || payload.message || "Request failed");
-      }
-      return payload;
-    }
+function selectedTimeSlots() {
+    return [...document.querySelectorAll('input[name="timeSlot"]:checked')].map(i => i.value);
+}
 
-    async function searchVenues() {
-      const search = document.getElementById("venueSearch").value.trim();
-      const payload = await api(`/api/catalog/venues?search=${encodeURIComponent(search)}`);
-      cachedVenues = payload.venues || [];
-      const select = document.getElementById("venueSelect");
-      select.innerHTML = `<option value="">Choose a venue</option>` + cachedVenues.map((venue) => `
-        <option value="${venue.venueId}">${escapeHtml(venue.venueName)} · ${escapeHtml(venue.campusName || "")}</option>
-      `).join("");
-    }
+function renderTimeSlots() {
+    document.getElementById("timeSlotGrid").innerHTML = TIME_SLOTS.map(s =>
+        `<label><input type="checkbox" name="timeSlot" value="${s}"> ${s}</label>`
+    ).join("");
+}
 
-    async function loadVenueDetail() {
-      const venueId = document.getElementById("venueSelect").value;
-      const motionSelect = document.getElementById("motionSelect");
-      motionSelect.innerHTML = `<option value="">Choose a motion type</option>`;
-      if (!venueId) {
-        return;
-      }
-      const payload = await api(`/api/catalog/venues/${venueId}`);
-      const venue = payload.venue;
-      motionSelect.innerHTML += venue.motion_types.map((motion) => `
-        <option value="${motion.name}">${escapeHtml(motion.name)}</option>
-      `).join("");
-      document.getElementById("availabilityBox").innerHTML = `
-        <strong>${escapeHtml(venue.venue_name)}</strong><br>
-        ${escapeHtml(venue.campus_name)} · ${escapeHtml(venue.open_time)}<br>
-        ${escapeHtml(venue.venue_mobile)}
-      `;
-    }
+async function api(path, opts = {}) {
+    const r = await fetch(path, { headers: {"Content-Type":"application/json"}, ...opts });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || d.message || "Request failed");
+    return d;
+}
 
-    async function loadAvailability() {
-      const venueId = document.getElementById("venueSelect").value;
-      const motion = document.getElementById("motionSelect").value;
-      if (!venueId || !motion) {
-        return;
-      }
-      const payload = await api(`/api/catalog/venues/${venueId}/availability?motion=${encodeURIComponent(motion)}`);
-      const rows = payload.availability.map((item) => {
+async function searchVenues() {
+    const q = document.getElementById("venueSearch").value.trim();
+    const d = await api(`/api/catalog/venues?search=${encodeURIComponent(q)}`);
+    cachedVenues = d.venues || [];
+    document.getElementById("venueSelect").innerHTML =
+        `<option value="">Choose a venue</option>` +
+        cachedVenues.map(v => `<option value="${v.venueId}">${esc(v.venueName)} · ${esc(v.campusName||"")}</option>`).join("");
+}
+
+async function loadVenueDetail() {
+    const vid = document.getElementById("venueSelect").value;
+    const ms = document.getElementById("motionSelect");
+    ms.innerHTML = `<option value="">Choose motion</option>`;
+    if (!vid) return;
+    const d = await api(`/api/catalog/venues/${vid}`);
+    const v = d.venue;
+    ms.innerHTML += v.motion_types.map(m => `<option value="${m.name}">${esc(m.name)}</option>`).join("");
+    document.getElementById("availabilityBox").innerHTML =
+        `<strong>${esc(v.venue_name)}</strong><br>${esc(v.campus_name)} · ${esc(v.open_time)}<br>${esc(v.venue_mobile)}`;
+}
+
+async function loadAvailability() {
+    const vid = document.getElementById("venueSelect").value;
+    const mot = document.getElementById("motionSelect").value;
+    if (!vid || !mot) return;
+    const d = await api(`/api/catalog/venues/${vid}/availability?motion=${encodeURIComponent(mot)}`);
+    const html = d.availability.map(item => {
         const slots = item.selectable_slots || [];
-        const slotMarkup = slots.length
-          ? `<div class="slot-pills">${slots.map((slot) => `
-              <span class="slot-pill">${escapeHtml(slot.field_name)} · ${escapeHtml(slot.time_slot)} · ¥${escapeHtml(slot.price)}</span>
-            `).join("")}</div>`
-          : `<div class="muted">No selectable slots right now.</div>`;
-        return `
-          <div class="availability-day">
-            <div class="availability-head">
-              <div class="availability-title">${escapeHtml(item.date)} · ${escapeHtml(item.view_str)}</div>
-              <div class="muted">${item.selectable_count} selectable</div>
-            </div>
-            ${slotMarkup}
-          </div>
-        `;
-      });
-      document.getElementById("availabilityBox").innerHTML = `
-        <strong>Visible reservation window</strong><br>
-        <div class="availability-list">${rows.join("") || "No visible dates right now."}</div>
-      `;
-    }
+        const pills = slots.length
+            ? `<div class="avail-slots">${slots.map(s =>
+                `<span class="avail-pill">${esc(s.field_name)} · ${esc(s.time_slot)} · ¥${esc(s.price)}</span>`
+              ).join("")}</div>`
+            : `<div class="empty">No selectable slots.</div>`;
+        return `<div class="avail-day">
+            <div class="avail-head"><span class="avail-title">${esc(item.date)} · ${esc(item.view_str)}</span><span style="color:var(--sub-text);font-size:0.75rem">${item.selectable_count} open</span></div>
+            ${pills}</div>`;
+    }).join("");
+    document.getElementById("availabilityBox").innerHTML = html || `<div class="empty">No visible dates.</div>`;
+}
 
-    async function createJob() {
-      const venueSelect = document.getElementById("venueSelect");
-      const venueId = venueSelect.value;
-      const venueName = venueSelect.selectedOptions[0]?.textContent?.split(" · ")[0] || "";
-      const payload = {
+async function createJob() {
+    const sel = document.getElementById("venueSelect");
+    const payload = {
         name: document.getElementById("jobName").value.trim(),
-        venue_id: venueId,
-        venue_name: venueName,
+        venue_id: sel.value,
+        venue_name: sel.selectedOptions[0]?.textContent?.split(" · ")[0] || "",
         motion: document.getElementById("motionSelect").value,
         target_date: document.getElementById("targetDate").value,
         preferred_fields: document.getElementById("preferredFields").value,
         time_slots: selectedTimeSlots(),
         retry_window_seconds: Number(document.getElementById("retryWindow").value || 180),
-        retry_interval_seconds: Number(document.getElementById("retryInterval").value || 5),
+        retry_interval_seconds: 5,
         enabled: true,
-      };
-      await api("/api/jobs", { method: "POST", body: JSON.stringify(payload) });
-      document.getElementById("jobName").value = "";
-      document.getElementById("preferredFields").value = "";
-      document.querySelectorAll('input[name="timeSlot"]').forEach((item) => { item.checked = false; });
-      await refreshStatus();
-    }
+    };
+    await api("/api/jobs", { method: "POST", body: JSON.stringify(payload) });
+    document.getElementById("jobName").value = "";
+    document.getElementById("preferredFields").value = "";
+    document.querySelectorAll('input[name="timeSlot"]').forEach(i => { i.checked = false; });
+    await refreshStatus();
+}
 
-    async function toggleJob(jobId, enabled) {
-      await api(`/api/jobs/${jobId}`, {
-        method: "PATCH",
-        body: JSON.stringify({ enabled }),
-      });
-      await refreshStatus();
-    }
+async function toggleJob(id, en) {
+    await api(`/api/jobs/${id}`, { method: "PATCH", body: JSON.stringify({ enabled: en }) });
+    await refreshStatus();
+}
 
-    async function deleteJob(jobId) {
-      await api(`/api/jobs/${jobId}`, { method: "DELETE" });
-      await refreshStatus();
-    }
+async function deleteJob(id) {
+    await api(`/api/jobs/${id}`, { method: "DELETE" });
+    await refreshStatus();
+}
 
-    async function runJob(jobId, dryRun) {
-      const payload = await api(`/api/jobs/${jobId}/run`, {
-        method: "POST",
-        body: JSON.stringify({ dry_run: dryRun }),
-      });
-      const message = payload.result?.message || payload.result?.order_id || "Run finished.";
-      alert(message);
-      await refreshStatus();
-    }
+async function runJob(id, dry) {
+    const d = await api(`/api/jobs/${id}/run`, { method: "POST", body: JSON.stringify({ dry_run: dry }) });
+    alert(d.result?.message || d.result?.order_id || "Done.");
+    await refreshStatus();
+}
 
-    function renderJobs(jobs) {
-      const root = document.getElementById("jobs");
-      if (!jobs.length) {
-        root.innerHTML = `<div class="muted">No jobs yet. Create one from the panel above.</div>`;
-        return;
-      }
-      root.innerHTML = jobs.map((job) => `
-        <article class="job">
-          <div class="job-head">
-            <div>
-              <h2 class="job-name">${escapeHtml(job.name)}</h2>
-              <div class="meta">
-                ${escapeHtml(job.venue_name)} · ${escapeHtml(job.motion)}<br>
-                ${escapeHtml(job.target_date)} · ${escapeHtml(job.time_slots.join(", "))}<br>
-                Preferred fields: ${escapeHtml(job.preferred_fields.join(", ") || "Any")}
-              </div>
+function statusClass(s) {
+    if (["success","idle"].includes(s)) return "st-success";
+    if (["waiting_window","no_slots","preview_ready"].includes(s)) return "st-waiting_window";
+    return "st-submit_failed";
+}
+
+function renderJobs(jobs) {
+    const el = document.getElementById("jobs");
+    if (!jobs.length) { el.innerHTML = `<div class="empty">No jobs yet.</div>`; return; }
+    el.innerHTML = jobs.map(j => `
+        <div class="job">
+            <div class="job-head">
+                <div>
+                    <div class="job-name">${esc(j.name)}</div>
+                    <div class="job-meta">
+                        ${esc(j.venue_name)} · ${esc(j.motion)}<br>
+                        ${esc(j.target_date)} · ${esc(j.time_slots.join(", "))}<br>
+                        Fields: ${esc(j.preferred_fields.join(", ") || "Any")}
+                    </div>
+                </div>
+                <span class="status-badge ${statusClass(j.last_status)}">${esc(j.last_status)}</span>
             </div>
-            <div class="status ${escapeHtml(job.last_status)}">${escapeHtml(job.last_status)}</div>
-          </div>
-          <div class="meta" style="margin-top:12px;">
-            ${escapeHtml(job.last_message || "No attempts yet.")}<br>
-            Last checked: ${escapeHtml(job.last_checked_at || "Never")}<br>
-            Order ID: ${escapeHtml(job.last_order_id || "None")}
-          </div>
-          <div class="actions">
-            <button class="secondary" onclick="runJob('${job.job_id}', true)">Preview</button>
-            <button class="good" onclick="runJob('${job.job_id}', false)">Run now</button>
-            <button class="warn" onclick="toggleJob('${job.job_id}', ${job.enabled ? "false" : "true"})">${job.enabled ? "Disable" : "Enable"}</button>
-            <button class="bad" onclick="deleteJob('${job.job_id}')">Delete</button>
-          </div>
-        </article>
-      `).join("");
-    }
-
-    function renderHistory(items) {
-      const root = document.getElementById("history");
-      if (!items.length) {
-        root.innerHTML = `<div class="muted">No daemon activity yet.</div>`;
-        return;
-      }
-      root.innerHTML = items.map((item) => `
-        <div class="history-item ${item.success ? "" : "bad"}">
-          <strong>${escapeHtml(item.job_name)}</strong><br>
-          ${escapeHtml(item.message)}<br>
-          <span class="muted">${escapeHtml(item.action)} · ${escapeHtml(item.timestamp)}</span>
+            <div class="job-meta" style="margin-top:8px">
+                ${esc(j.last_message || "—")}<br>
+                Checked: ${esc(j.last_checked_at || "Never")} · Order: ${esc(j.last_order_id || "—")}
+            </div>
+            <div class="job-actions">
+                <button class="btn-ghost" onclick="runJob('${j.job_id}',true)">Preview</button>
+                <button class="btn-run" onclick="runJob('${j.job_id}',false)">Run</button>
+                <button class="btn-warn" onclick="toggleJob('${j.job_id}',${j.enabled?"false":"true"})">${j.enabled?"Disable":"Enable"}</button>
+                <button class="btn-danger" onclick="deleteJob('${j.job_id}')">Delete</button>
+            </div>
         </div>
-      `).join("");
-    }
+    `).join("");
+}
 
-    async function refreshStatus() {
-      const payload = await api("/api/status");
-      document.getElementById("authMode").textContent = `Auth mode: ${payload.auth_mode}`;
-      document.getElementById("nextRun").textContent = `Next noon run: ${payload.next_run_at || "not scheduled"}`;
-      renderJobs(payload.jobs || []);
-      renderHistory(payload.history || []);
-    }
+function renderHistory(items) {
+    const el = document.getElementById("history");
+    if (!items.length) { el.innerHTML = `<div class="empty">No activity yet.</div>`; return; }
+    el.innerHTML = items.map(i => `
+        <div class="hist-item">
+            <div class="hist-msg">
+                <span class="dot ${i.success?"st-ok":"st-fail"}">${i.success?"•":"×"}</span>
+                <span style="${i.success?"":"color:var(--error)"}">${esc(i.job_name)}: ${esc(i.message)}</span>
+            </div>
+            <div class="hist-time">${esc((i.timestamp||"").substring(11,19))}</div>
+        </div>
+    `).join("");
+}
 
-    renderTimeSlots();
-    refreshStatus();
-    setInterval(refreshStatus, 15000);
-  </script>
+async function refreshStatus() {
+    const d = await api("/api/status");
+    const jobCount = (d.jobs||[]).length;
+    const enabled = (d.jobs||[]).filter(j=>j.enabled).length;
+    document.getElementById("heroStatus").textContent = `${jobCount} job${jobCount!==1?"s":""}, ${enabled} active`;
+    document.getElementById("heroSub").textContent = d.next_run_at ? `Next run: ${d.next_run_at}` : "No scheduled run";
+    document.getElementById("authMode").textContent = d.auth_mode;
+    document.getElementById("nextRun").textContent = d.next_run_at ? new Date(d.next_run_at).toLocaleTimeString() : "—";
+    renderJobs(d.jobs || []);
+    renderHistory(d.history || []);
+}
+
+renderTimeSlots();
+refreshStatus();
+setInterval(refreshStatus, 15000);
+</script>
 </body>
 </html>"""
 
