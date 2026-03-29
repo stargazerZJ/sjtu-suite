@@ -29,6 +29,7 @@ from sjtusuite.clients.sports import (
 )
 from sjtusuite.core.config import get_data_dir
 from sjtusuite.core.credentials import credentials
+from sjtusuite.notifications import NtfyNotifier
 from sjtusuite.servers.base import get_client_ip
 
 
@@ -142,6 +143,7 @@ class SportsReservationDaemon:
             replace_existing=True,
         )
         self.jobs: dict[str, ReservationJob] = self._load_jobs()
+        self.notifier = NtfyNotifier.from_config(credentials.ntfy_config)
 
     def start(self) -> None:
         self.scheduler.start()
@@ -510,11 +512,18 @@ class SportsReservationDaemon:
                         message,
                         details={"attempts": attempt_count, "order_id": order_id},
                     )
+                    notification = self._send_booking_notification(
+                        job,
+                        order_id=order_id,
+                        payment=payment,
+                        preview=preview,
+                    )
                     return {
                         "ok": True,
                         "message": message,
                         "order_id": order_id,
                         "payment": payment,
+                        "notification": notification,
                         "preview": preview,
                         "attempts": attempt_count,
                     }
@@ -532,6 +541,60 @@ class SportsReservationDaemon:
                     continue
                 self.record_history(job, triggered_by, False, message, details=response)
                 return {"ok": False, "message": message, "response": response}
+
+    def _send_booking_notification(
+        self,
+        job: ReservationJob,
+        *,
+        order_id: str,
+        payment: dict[str, Any],
+        preview: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self.notifier:
+            return {"configured": False, "sent": False}
+
+        selected_slots = preview.get("selected_slots", [])
+        slot_lines = "\n".join(
+            f"- {slot['field_name']} {slot['time_slot']} (Yuan {slot['price']})"
+            for slot in selected_slots
+        )
+        payment_url = payment.get("payment_url")
+        message_lines = [
+            f"Venue: {job.venue_name}",
+            f"Motion: {job.motion}",
+            f"Date: {job.target_date}",
+            f"Job: {job.name}",
+            f"Order ID: {order_id}",
+            f"Total: Yuan {preview.get('total_price', '?')}",
+        ]
+        if slot_lines:
+            message_lines.extend(["Slots:", slot_lines])
+        if payment_url:
+            message_lines.append(f"Payment URL: {payment_url}")
+
+        try:
+            result = self.notifier.send(
+                "\n".join(message_lines),
+                title=f"SJTU sports booked: {job.venue_name}",
+                tags=["sports", "reservation"],
+                click=payment_url,
+            )
+        except Exception as exc:  # pragma: no cover - network failure path
+            logging.getLogger("sports_server").warning("Failed to send ntfy notification: %s", exc)
+            self.record_history(job, "notification", False, f"ntfy notification failed: {exc}")
+            return {"configured": True, "sent": False, "error": str(exc)}
+
+        details = {"topic": result.topic, "status_code": result.status_code}
+        if result.message_id:
+            details["message_id"] = result.message_id
+        self.record_history(job, "notification", True, "ntfy notification sent.", details=details)
+        return {
+            "configured": True,
+            "sent": True,
+            "topic": result.topic,
+            "status_code": result.status_code,
+            "message_id": result.message_id,
+        }
 
     def run_scheduled_jobs(self) -> None:
         for job in self.list_jobs():
