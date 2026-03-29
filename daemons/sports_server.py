@@ -613,7 +613,14 @@ select {
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23888' d='M2 4l4 4 4-4'/%3E%3C/svg%3E");
     background-repeat: no-repeat; background-position: right 10px center; padding-right: 28px;
 }
-input[type="checkbox"] { width: auto; accent-color: var(--accent); }
+input[type="checkbox"] { 
+    width: auto; 
+    accent-color: var(--accent);
+    -webkit-appearance: auto; 
+    appearance: auto;
+    padding: 0;
+    border: none;
+}
 input:focus, select:focus { border-color: var(--accent); }
 .field-row { margin-bottom: 0.75rem; }
 .field-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
