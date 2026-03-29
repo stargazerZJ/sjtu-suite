@@ -42,8 +42,33 @@ class PEClient(OAuthClientBase):
         self.logger.debug("Session is valid.")
         return True
 
+    @staticmethod
+    def _parse_json_response(response):
+        try:
+            return response.json()
+        except ValueError:
+            return None
+
+    def _is_identity_error(self, response) -> bool:
+        data = self._parse_json_response(response)
+        return bool(data and data.get("code") == 1003)
+
+    def clear_pe_session(self):
+        """Remove PE-domain cookies so the next login starts a fresh PE session."""
+        for cookie in list(self.session.cookies):
+            if cookie.domain == "pe.sjtu.edu.cn" or cookie.domain.endswith(".pe.sjtu.edu.cn"):
+                self.session.cookies.clear(domain=cookie.domain, path=cookie.path, name=cookie.name)
+        self.uid = None
+
+    def relogin(self):
+        """Force a fresh PE login session."""
+        self.clear_pe_session()
+        return self.login()
+
     def login(self):
         """Login to PE system"""
+        # The uid returned by /sports/my/uid is scoped to the current PE session.
+        self.uid = None
         session_stat = self.validate_session()
         
         if session_stat:
@@ -66,7 +91,9 @@ class PEClient(OAuthClientBase):
         """Get user UID from PE system"""
         response = self.session.get(f"{self.base_url}/sports/my/uid", allow_redirects=False)
         if response.status_code == 302:
-            self.login()
+            if not self.login():
+                raise Exception("Failed to refresh PE login session")
+            response = self.session.get(f"{self.base_url}/sports/my/uid", allow_redirects=False)
         data = response.json()
         if data.get("code") == 0:
             self.uid = data.get("data").get("uid")
@@ -83,16 +110,24 @@ class PEClient(OAuthClientBase):
         new_lat = base_lat + radius * math.sin(angle)
         return new_lng, new_lat
 
-    def get_point_rule(self, lng: float, lat: float):
+    def get_point_rule(self, lng: float, lat: float, retry_on_identity_error: bool = True):
         """Get running point rules for location"""
+        if not self.uid:
+            self.get_uid()
         location = f"{lng}%2C{lat}"
-        headers = {
-            "Authorization": self.uid
-        }
-        print(f"{self.base_url}/api/running/point-rule?location={location}")
-        return self.session.get(f"{self.base_url}/api/running/point-rule?location={location}", headers=headers)
+        headers = {"Authorization": self.uid}
+        response = self.session.get(f"{self.base_url}/api/running/point-rule?location={location}", headers=headers)
+        if retry_on_identity_error and self._is_identity_error(response):
+            self.logger.warning("PE identity token was rejected during point-rule lookup. Re-establishing the PE session and retrying.")
+            if self.relogin():
+                headers["Authorization"] = self.get_uid()
+                response = self.session.get(f"{self.base_url}/api/running/point-rule?location={location}", headers=headers)
+            if self._is_identity_error(response) and self.relogin():
+                headers["Authorization"] = self.get_uid()
+                response = self.session.get(f"{self.base_url}/api/running/point-rule?location={location}", headers=headers)
+        return response
 
-    def upload_result(self, data: dict, lon, lat):
+    def upload_result(self, data: dict, lon, lat, retry_on_identity_error: bool = True):
         """Upload running result"""
         
         if not self.uid:
@@ -103,7 +138,7 @@ class PEClient(OAuthClientBase):
             "Authorization": self.uid
         }
 
-        point_rule_response = self.get_point_rule(lon, lat)
+        point_rule_response = self.get_point_rule(lon, lat, retry_on_identity_error=retry_on_identity_error)
         self.logger.info(f"Point rule response status: {point_rule_response.status_code}")
         self.logger.info(f"Point rule response text: {point_rule_response.text}")
 
@@ -115,6 +150,7 @@ class PEClient(OAuthClientBase):
 
         json_payload_string = json.dumps([data], ensure_ascii=False)
         
+        headers_to_send["Authorization"] = self.uid
         headers_to_send['Content-Type'] = 'application/json; charset=utf-8'
 
         self.logger.info(f"Attempting to upload result with UID: {self.uid}")
@@ -125,6 +161,19 @@ class PEClient(OAuthClientBase):
             data=json_payload_string.encode('utf-8'),
             headers=headers_to_send
         )
+
+        if retry_on_identity_error and self._is_identity_error(response):
+            self.logger.warning("PE identity token was rejected during upload. Re-establishing the PE session and retrying once.")
+            if self.relogin():
+                headers_to_send["Authorization"] = self.get_uid()
+            point_rule_response = self.get_point_rule(lon, lat, retry_on_identity_error=False)
+            self.logger.info(f"Point rule response status: {point_rule_response.status_code}")
+            self.logger.info(f"Point rule response text: {point_rule_response.text}")
+            response = self.session.post(
+                f"{self.base_url}/api/running/result/upload",
+                data=json_payload_string.encode('utf-8'),
+                headers=headers_to_send
+            )
 
         self.logger.info(f"Upload response status: {response.status_code}")
         self.logger.info(f"Upload response text: {response.text}")
