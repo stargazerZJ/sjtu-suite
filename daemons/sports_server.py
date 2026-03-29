@@ -301,7 +301,7 @@ class SportsReservationDaemon:
 
     def list_venues(self, search: str = "") -> list[dict[str, Any]]:
         client = self.create_client()
-        venues, _ = client.list_venues(venue_name=search)
+        venues, _ = client.list_all_venues(venue_name=search)
         return [venue.raw for venue in venues]
 
     def get_venue_detail(self, venue_id: str) -> dict[str, Any]:
@@ -322,20 +322,27 @@ class SportsReservationDaemon:
         options = client.list_date_options(venue_id, motion_type.id)
         results = []
         for option in options:
-            count = len(
-                client.list_available_slots(
-                    venue_id,
-                    motion_type.id,
-                    date=option.date,
-                    date_id=option.date_id,
-                )
+            slots = client.list_available_slots(
+                venue_id,
+                motion_type.id,
+                date=option.date,
+                date_id=option.date_id,
             )
             results.append(
                 {
                     "date": option.date,
                     "view_str": option.view_str,
                     "week": option.week,
-                    "selectable_count": count,
+                    "selectable_count": len(slots),
+                    "selectable_slots": [
+                        {
+                            "field_name": slot.field_name,
+                            "time_slot": slot.time_slot,
+                            "price": slot.price,
+                            "field_id": slot.field_id,
+                        }
+                        for slot in slots
+                    ],
                 }
             )
         return results
@@ -758,6 +765,45 @@ def create_dashboard_html() -> str:
       color: var(--muted);
       line-height: 1.6;
     }
+    .availability-list {
+      display: grid;
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .availability-day {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 12px;
+      background: rgba(255, 255, 255, 0.72);
+    }
+    .availability-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: baseline;
+      margin-bottom: 8px;
+    }
+    .availability-title {
+      font-weight: 700;
+      color: var(--ink);
+    }
+    .slot-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .slot-pill {
+      display: inline-flex;
+      gap: 6px;
+      align-items: center;
+      border-radius: 999px;
+      padding: 7px 10px;
+      background: rgba(31, 122, 76, 0.1);
+      color: var(--good);
+      font-size: 13px;
+      font-weight: 600;
+    }
     @media (max-width: 960px) {
       .hero, .grid { grid-template-columns: 1fr; }
       .form-grid, .slot-grid { grid-template-columns: 1fr; }
@@ -928,10 +974,26 @@ def create_dashboard_html() -> str:
         return;
       }
       const payload = await api(`/api/catalog/venues/${venueId}/availability?motion=${encodeURIComponent(motion)}`);
-      const rows = payload.availability.map((item) => `${escapeHtml(item.date)} · ${escapeHtml(item.view_str)} · ${item.selectable_count} selectable slots`);
+      const rows = payload.availability.map((item) => {
+        const slots = item.selectable_slots || [];
+        const slotMarkup = slots.length
+          ? `<div class="slot-pills">${slots.map((slot) => `
+              <span class="slot-pill">${escapeHtml(slot.field_name)} · ${escapeHtml(slot.time_slot)} · ¥${escapeHtml(slot.price)}</span>
+            `).join("")}</div>`
+          : `<div class="muted">No selectable slots right now.</div>`;
+        return `
+          <div class="availability-day">
+            <div class="availability-head">
+              <div class="availability-title">${escapeHtml(item.date)} · ${escapeHtml(item.view_str)}</div>
+              <div class="muted">${item.selectable_count} selectable</div>
+            </div>
+            ${slotMarkup}
+          </div>
+        `;
+      });
       document.getElementById("availabilityBox").innerHTML = `
         <strong>Visible reservation window</strong><br>
-        ${rows.join("<br>") || "No visible dates right now."}
+        <div class="availability-list">${rows.join("") || "No visible dates right now."}</div>
       `;
     }
 

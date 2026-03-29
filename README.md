@@ -89,7 +89,9 @@ sjtu-pe run --dry-run          # Preview without uploading
 sjtu-pe status                 # Check login status
 
 # Sports venue reservation
-sjtu-sports venues
+sjtu-sports                              # Interactive venue -> motion -> date -> slot picker
+sjtu-sports venues                       # Fetch all venue pages by default
+sjtu-sports venues --page-num 2          # Inspect a single page when needed
 sjtu-sports --from-browser venues         # Reuse the current Playwright browser login
 sjtu-sports availability <venue_id> --motion 乒乓球
 sjtu-sports reserve <venue_id> --motion 乒乓球 --date 2026-03-29 --field 场地10 --time 19:00-20:00

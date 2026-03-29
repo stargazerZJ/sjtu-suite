@@ -505,6 +505,43 @@ class SportsReservationClient(OAuthClientBase):
         ]
         return venues, int(payload.get("total", len(venues)))
 
+    def list_all_venues(
+        self,
+        *,
+        page_size: int = 12,
+        campus_ids: Iterable[str] | None = None,
+        type_ids: Iterable[str] | None = None,
+        venue_name: str = "",
+        personal: bool = True,
+    ) -> tuple[list[VenueSummary], int]:
+        venues: list[VenueSummary] = []
+        seen_ids: set[str] = set()
+        reported_total = 0
+        page_num = 1
+        while True:
+            page_rows, page_total = self.list_venues(
+                page_num=page_num,
+                page_size=page_size,
+                campus_ids=campus_ids,
+                type_ids=type_ids,
+                venue_name=venue_name,
+                personal=personal,
+            )
+            reported_total = max(reported_total, page_total)
+            if not page_rows:
+                break
+            new_rows = 0
+            for venue in page_rows:
+                if venue.venue_id in seen_ids:
+                    continue
+                seen_ids.add(venue.venue_id)
+                venues.append(venue)
+                new_rows += 1
+            if len(page_rows) < page_size or new_rows == 0:
+                break
+            page_num += 1
+        return venues, reported_total
+
     def get_venue_detail(self, venue_id: str) -> VenueDetail:
         payload = self._json_request(
             "POST",
