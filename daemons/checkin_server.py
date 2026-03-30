@@ -4,8 +4,10 @@ import json
 import logging
 import threading
 import time
-from datetime import datetime
 from collections import deque
+from datetime import datetime
+from urllib.parse import parse_qs, urlparse
+
 from flask import Flask, render_template_string, jsonify, request
 from flask_cors import CORS
 import requests
@@ -13,6 +15,7 @@ import requests
 from sjtusuite.auth import JACLogin
 from sjtusuite.clients.checkin import CheckinClient
 from sjtusuite.core.credentials import credentials
+from sjtusuite.notifications import DaemonNotificationClient
 from sjtusuite.servers.base import get_client_ip
 
 
@@ -24,6 +27,11 @@ CORS(app)
 # Initialize JACLogin and CheckinClient
 jac_login = JACLogin(credentials.username, credentials.password)
 checkin_client = CheckinClient(jac_login)
+notification_client = DaemonNotificationClient.from_config(
+    "checkin",
+    credentials.ntfy_config,
+    logger=app.logger,
+)
 
 # Configuration
 CONFIG = {
@@ -37,6 +45,30 @@ checkin_history = deque(maxlen=50)  # Store last 50 attempts
 last_successful_checkin = None
 processed_timestamps = set()  # Track processed timestamps to avoid duplicates
 history_lock = threading.Lock()
+
+
+def build_checkin_notification(url, success, message, timestamp=None):
+    """Build a human-readable notification payload for a checkin attempt."""
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query)
+    course_code = params.get('courseCode', ['unknown'])[0]
+    sign_history_id = params.get('signHistoryId', ['unknown'])[0]
+    status_label = "succeeded" if success else "failed"
+    title = f"SJTU checkin {status_label}"
+    body_lines = [
+        f"Status: {status_label}",
+        f"Course: {course_code}",
+        f"Sign history: {sign_history_id}",
+        f"Timestamp: {timestamp or 'unknown'}",
+        f"Result: {message}",
+    ]
+    return {
+        "title": title,
+        "message": "\n".join(body_lines),
+        "event": "success" if success else "failed",
+        "severity": "success" if success else "error",
+        "tags": ["attendance", "success" if success else "failed"],
+    }
 
 
 def record_checkin_attempt(url, success, message, timestamp=None):
@@ -89,6 +121,19 @@ def poll_and_checkin():
                         # Perform checkin
                         success, message = checkin_client.checkin(checkin_url)
                         record_checkin_attempt(checkin_url, success, message, timestamp)
+                        notification = build_checkin_notification(
+                            checkin_url,
+                            success,
+                            message,
+                            timestamp,
+                        )
+                        notification_client.notify(
+                            notification["event"],
+                            notification["message"],
+                            title=notification["title"],
+                            severity=notification["severity"],
+                            tags=notification["tags"],
+                        )
                         
                         app.logger.info(f"Checkin result: success={success}, message={message}")
             
