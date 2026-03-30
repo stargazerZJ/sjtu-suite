@@ -794,7 +794,7 @@ def create_dashboard_html() -> str:
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Sports Reservation Daemon</title>
+  <title>体育场馆预约守护进程</title>
   <style>
 :root {
     --bg: #0a0a0f;
@@ -950,15 +950,15 @@ button:hover { opacity: 0.85; }
 <body>
 <div class="wrap">
     <header>
-        <h1>Sports Reservation</h1>
-        <div class="status-dot"><span class="pulse"></span> Daemon</div>
+        <h1>交我约</h1>
+        <div class="status-dot"><span class="pulse"></span> 守护进程</div>
     </header>
 
     <!-- Status -->
     <div class="section">
-        <h2>Status</h2>
+        <h2>状态</h2>
         <div class="hero">
-            <div class="hero-status" id="heroStatus">Loading…</div>
+            <div class="hero-status" id="heroStatus">加载中…</div>
             <div class="hero-sub" id="heroSub"></div>
             <div class="badges">
                 <span class="badge" id="authMode">…</span>
@@ -969,106 +969,106 @@ button:hover { opacity: 0.85; }
 
     <!-- Create Job -->
     <div class="form-section">
-        <h2>New Job</h2>
+        <h2>新建任务</h2>
         <div class="field-row">
-            <label for="jobName">Job name</label>
-            <input id="jobName" placeholder="e.g. Monday ping pong">
+            <label for="jobName">任务名称</label>
+            <input id="jobName" placeholder="例如：周一乒乓球">
         </div>
         <div class="field-pair">
             <div class="field-row">
-                <label for="jobType">Mode</label>
+                <label for="jobType">模式</label>
                 <select id="jobType" onchange="toggleJobMode()">
-                    <option value="target_date">Target date</option>
-                    <option value="cron">Cron watcher</option>
+                    <option value="target_date">指定日期</option>
+                    <option value="cron">定时监控</option>
                 </select>
             </div>
             <div class="field-row" id="targetDateRow">
-                <label for="targetDate">Date</label>
+                <label for="targetDate">日期</label>
                 <input id="targetDate" type="date">
             </div>
         </div>
         <div class="field-row">
-            <label for="venueSearch">Venue search</label>
+            <label for="venueSearch">场馆搜索</label>
             <div class="inline-row">
-                <input id="venueSearch" placeholder="Search venue name">
-                <button type="button" class="btn-ghost" onclick="searchVenues()">Search</button>
+                <input id="venueSearch" placeholder="搜索场馆名称">
+                <button type="button" class="btn-ghost" onclick="searchVenues()">搜索</button>
             </div>
         </div>
         <div class="field-row">
-            <label for="venueSelect">Venue</label>
+            <label for="venueSelect">场馆</label>
             <select id="venueSelect" onchange="loadVenueDetail()">
-                <option value="">Choose a venue</option>
+                <option value="">选择场馆</option>
             </select>
         </div>
         <div class="field-pair">
             <div class="field-row">
-                <label for="motionSelect">Motion type</label>
+                <label for="motionSelect">运动类型</label>
                 <select id="motionSelect" onchange="loadAvailability()">
-                    <option value="">Choose motion</option>
+                    <option value="">选择运动类型</option>
                 </select>
             </div>
             <div class="field-row" id="retryWindowRow">
-                <label for="retryWindow">Retry window (s)</label>
+                <label for="retryWindow">重试窗口 (秒)</label>
                 <input id="retryWindow" type="number" min="10" value="180">
             </div>
         </div>
         <div class="field-pair hidden" id="cronWindowRows">
             <div class="field-row">
-                <label for="windowStartDays">Window start (days from now)</label>
+                <label for="windowStartDays">窗口开始 (距今天数)</label>
                 <input id="windowStartDays" type="number" min="0" value="0">
             </div>
             <div class="field-row">
-                <label for="windowEndDays">Window end (days from now)</label>
+                <label for="windowEndDays">窗口结束 (距今天数)</label>
                 <input id="windowEndDays" type="number" min="0" value="7">
             </div>
         </div>
         <div class="field-pair hidden" id="cronTimingRows">
             <div class="field-row">
-                <label for="cronIntervalMinutes">Check every (min)</label>
+                <label for="cronIntervalMinutes">检查间隔 (分钟)</label>
                 <input id="cronIntervalMinutes" type="number" min="1" value="10">
             </div>
             <div class="field-row">
-                <label for="redeemDeadlineHours">Redeem deadline (hr before start)</label>
+                <label for="redeemDeadlineHours">下单截止 (提前小时数)</label>
                 <input id="redeemDeadlineHours" type="number" min="0" value="2">
             </div>
         </div>
         <div class="field-pair">
             <div class="field-row">
-                <label for="preferredFields">Preferred fields</label>
-                <input id="preferredFields" placeholder="Optional, comma sep.">
+                <label for="preferredFields">偏好场地</label>
+                <input id="preferredFields" placeholder="可选，英文逗号分隔">
             </div>
             <div class="field-row">
-                <label for="retryInterval">Retry interval (s)</label>
+                <label for="retryInterval">重试间隔 (秒)</label>
                 <input id="retryInterval" type="number" min="1" value="5">
             </div>
         </div>
         <div class="field-row">
-            <label>Time slots</label>
+            <label>时间段</label>
             <div class="slot-grid" id="timeSlotGrid"></div>
         </div>
         <div class="btn-row">
-            <button type="button" class="btn-primary" onclick="createJob()">Save job</button>
-            <button type="button" class="btn-ghost" onclick="refreshStatus()">Refresh</button>
+            <button type="button" class="btn-primary" onclick="createJob()">保存任务</button>
+            <button type="button" class="btn-ghost" onclick="refreshStatus()">刷新</button>
         </div>
-        <div id="modeHelp" class="info-box">Target-date mode opens the booking right at noon for a specific date. Cron watcher mode scans every few minutes for newly freed slots inside a configurable date window and books before the redeem cutoff.</div>
-        <div id="availabilityBox" class="info-box">Search a venue to see availability.</div>
+        <div id="modeHelp" class="info-box">指定日期模式将在中午抢定特定日期的场馆。定时监控模式将每隔几分钟扫描配置的日期窗口内的新释放场地，并在下单截止前预订。</div>
+        <div id="availabilityBox" class="info-box">搜索场馆以查看可用性。</div>
     </div>
 
     <!-- Jobs -->
     <div class="section">
-        <h2>Jobs</h2>
+        <h2>任务列表</h2>
         <div id="jobs"></div>
     </div>
 
     <!-- History -->
     <div class="section">
-        <h2>Recent Activity</h2>
+        <h2>最近活动</h2>
         <div id="history" class="list"></div>
     </div>
 
     <div class="meta-footer">
-        <div>Sports Reservation Daemon</div>
-        <div>Auto-refresh 15s</div>
+        <div>体育场馆预约守护进程</div>
+        <div>每15秒自动刷新</div>
     </div>
 </div>
 
@@ -1111,14 +1111,14 @@ async function searchVenues() {
     const d = await api(`/api/catalog/venues?search=${encodeURIComponent(q)}`);
     cachedVenues = d.venues || [];
     document.getElementById("venueSelect").innerHTML =
-        `<option value="">Choose a venue</option>` +
+        `<option value="">选择场馆</option>` +
         cachedVenues.map(v => `<option value="${v.venueId}">${esc(v.venueName)} · ${esc(v.campusName||"")}</option>`).join("");
 }
 
 async function loadVenueDetail() {
     const vid = document.getElementById("venueSelect").value;
     const ms = document.getElementById("motionSelect");
-    ms.innerHTML = `<option value="">Choose motion</option>`;
+    ms.innerHTML = `<option value="">选择运动类型</option>`;
     if (!vid) return;
     const d = await api(`/api/catalog/venues/${vid}`);
     const v = d.venue;
@@ -1138,12 +1138,12 @@ async function loadAvailability() {
             ? `<div class="avail-slots">${slots.map(s =>
                 `<span class="avail-pill">${esc(s.field_name)} · ${esc(s.time_slot)} · ¥${esc(s.price)}</span>`
               ).join("")}</div>`
-            : `<div class="empty">No selectable slots.</div>`;
+            : `<div class="empty">没有可选时间段。</div>`;
         return `<div class="avail-day">
-            <div class="avail-head"><span class="avail-title">${esc(item.date)} · ${esc(item.view_str)}</span><span style="color:var(--sub-text);font-size:0.75rem">${item.selectable_count} open</span></div>
+            <div class="avail-head"><span class="avail-title">${esc(item.date)} · ${esc(item.view_str)}</span><span style="color:var(--sub-text);font-size:0.75rem">${item.selectable_count} 个空余</span></div>
             ${pills}</div>`;
     }).join("");
-    document.getElementById("availabilityBox").innerHTML = html || `<div class="empty">No visible dates.</div>`;
+    document.getElementById("availabilityBox").innerHTML = html || `<div class="empty">没有可见日期。</div>`;
 }
 
 async function createJob() {
@@ -1185,7 +1185,7 @@ async function deleteJob(id) {
 
 async function runJob(id, dry) {
     const d = await api(`/api/jobs/${id}/run`, { method: "POST", body: JSON.stringify({ dry_run: dry }) });
-    alert(d.result?.message || d.result?.order_id || "Done.");
+    alert(d.result?.message || d.result?.order_id || "完成。");
     await refreshStatus();
 }
 
@@ -1197,7 +1197,7 @@ function statusClass(s) {
 
 function renderJobs(jobs) {
     const el = document.getElementById("jobs");
-    if (!jobs.length) { el.innerHTML = `<div class="empty">No jobs yet.</div>`; return; }
+    if (!jobs.length) { el.innerHTML = `<div class="empty">暂无任务。</div>`; return; }
     el.innerHTML = jobs.map(j => `
         <div class="job">
             <div class="job-head">
@@ -1206,23 +1206,23 @@ function renderJobs(jobs) {
                     <div class="job-meta">
                         ${esc(j.venue_name)} · ${esc(j.motion)}<br>
                         ${j.job_type === "cron"
-                            ? `Cron every ${esc(j.cron_interval_minutes)} min · Days +${esc(j.window_start_days)} to +${esc(j.window_end_days)}<br>Redeem cutoff: ${esc(j.redeem_deadline_hours)} hr · Slots: ${esc(j.time_slots.join(", "))}`
-                            : `${esc(j.target_date)} · ${esc(j.time_slots.join(", "))}<br>Retry window: ${esc(j.retry_window_seconds)} s`
+                            ? `定时检查 每 ${esc(j.cron_interval_minutes)} 分钟 · 天数 +${esc(j.window_start_days)} 至 +${esc(j.window_end_days)}<br>下单截止: 提前 ${esc(j.redeem_deadline_hours)} 小时 · 时间段: ${esc(j.time_slots.join(", "))}`
+                            : `${esc(j.target_date)} · ${esc(j.time_slots.join(", "))}<br>重试窗口: ${esc(j.retry_window_seconds)} 秒`
                         }<br>
-                        Fields: ${esc(j.preferred_fields.join(", ") || "Any")}
+                        场地: ${esc(j.preferred_fields.join(", ") || "任意")}
                     </div>
                 </div>
                 <span class="status-badge ${statusClass(j.last_status)}">${esc(j.last_status)}</span>
             </div>
             <div class="job-meta" style="margin-top:8px">
                 ${esc(j.last_message || "—")}<br>
-                Checked: ${esc(j.last_checked_at || "Never")} · Order: ${esc(j.last_order_id || "—")}
+                检查时间: ${esc(j.last_checked_at || "从未")} · 订单: ${esc(j.last_order_id || "—")}
             </div>
             <div class="job-actions">
-                <button class="btn-ghost" onclick="runJob('${j.job_id}',true)">Preview</button>
-                <button class="btn-run" onclick="runJob('${j.job_id}',false)">Run</button>
-                <button class="btn-warn" onclick="toggleJob('${j.job_id}',${j.enabled?"false":"true"})">${j.enabled?"Disable":"Enable"}</button>
-                <button class="btn-danger" onclick="deleteJob('${j.job_id}')">Delete</button>
+                <button class="btn-ghost" onclick="runJob('${j.job_id}',true)">预览</button>
+                <button class="btn-run" onclick="runJob('${j.job_id}',false)">运行</button>
+                <button class="btn-warn" onclick="toggleJob('${j.job_id}',${j.enabled?"false":"true"})">${j.enabled?"禁用":"启用"}</button>
+                <button class="btn-danger" onclick="deleteJob('${j.job_id}')">删除</button>
             </div>
         </div>
     `).join("");
@@ -1230,7 +1230,7 @@ function renderJobs(jobs) {
 
 function renderHistory(items) {
     const el = document.getElementById("history");
-    if (!items.length) { el.innerHTML = `<div class="empty">No activity yet.</div>`; return; }
+    if (!items.length) { el.innerHTML = `<div class="empty">暂无活动。</div>`; return; }
     el.innerHTML = items.map(i => `
         <div class="hist-item">
             <div class="hist-msg">
@@ -1246,8 +1246,8 @@ async function refreshStatus() {
     const d = await api("/api/status");
     const jobCount = (d.jobs||[]).length;
     const enabled = (d.jobs||[]).filter(j=>j.enabled).length;
-    document.getElementById("heroStatus").textContent = `${jobCount} job${jobCount!==1?"s":""}, ${enabled} active`;
-    document.getElementById("heroSub").textContent = d.next_run_at ? `Next run: ${d.next_run_at}` : "No scheduled run";
+    document.getElementById("heroStatus").textContent = `${jobCount} 个任务, ${enabled} 个活跃`;
+    document.getElementById("heroSub").textContent = d.next_run_at ? `下次运行: ${d.next_run_at}` : "暂无计划运行";
     document.getElementById("authMode").textContent = d.auth_mode;
     document.getElementById("nextRun").textContent = d.next_run_at ? new Date(d.next_run_at).toLocaleTimeString() : "—";
     renderJobs(d.jobs || []);
