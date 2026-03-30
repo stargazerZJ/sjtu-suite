@@ -57,7 +57,7 @@ If you prefer to store the password directly in the file (not recommended), use:
 }
 ```
 
-`notifications.ntfy` is optional. When configured, `sjtu-sportsd` sends an `ntfy.sh` push notification after it successfully creates a sports reservation order. The notifier lives in [sjtusuite/notifications/ntfy.py](/Users/theunknownthing/sjtu-suite/sjtusuite/notifications/ntfy.py), so other clients and daemons can reuse it too.
+`notifications.ntfy` is optional. When configured, `sjtu-sportsd` sends an `ntfy.sh` push notification after it successfully creates a sports reservation order.
 
 ## Quick Start
 
@@ -116,6 +116,11 @@ sjtu-sportsd
 sjtu-sportsd --from-browser               # Test the daemon against the current Playwright browser login
 ```
 
+The sports daemon supports two job modes:
+
+- `target_date`: the existing noon-opening watcher for a specific reservation date one week out
+- `cron`: a cancellation watcher that scans every `N` minutes for free slots inside a configurable date window and only books slots that are still before the redeem cutoff (default `2` hours before start)
+
 ### As Daemons (Long-Running Services)
 
 ```bash
@@ -148,6 +153,7 @@ sjtu-suite/
 │   │   ├── sports.py     # Sports reservation
 │   │   └── library/      # Library seat reservation
 │   ├── core/             # Utilities (logging, config)
+│   ├── notifications/    # Reusable notification integrations
 │   └── servers/          # Flask server utilities
 ├── daemons/              # Long-running services
 │   ├── door_server.py
