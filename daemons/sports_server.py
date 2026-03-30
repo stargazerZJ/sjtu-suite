@@ -1037,7 +1037,7 @@ button:hover { opacity: 0.85; }
                 <label for="preferredFields">偏好场地</label>
                 <input id="preferredFields" placeholder="可选，英文逗号分隔">
             </div>
-            <div class="field-row">
+            <div class="field-row" id="retryIntervalRow">
                 <label for="retryInterval">重试间隔 (秒)</label>
                 <input id="retryInterval" type="number" min="1" value="5">
             </div>
@@ -1089,6 +1089,7 @@ function toggleJobMode() {
     const isCron = mode === "cron";
     document.getElementById("targetDateRow").classList.toggle("hidden", isCron);
     document.getElementById("retryWindowRow").classList.toggle("hidden", isCron);
+    document.getElementById("retryIntervalRow").classList.toggle("hidden", isCron);
     document.getElementById("cronWindowRows").classList.toggle("hidden", !isCron);
     document.getElementById("cronTimingRows").classList.toggle("hidden", !isCron);
 }
