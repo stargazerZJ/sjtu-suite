@@ -38,7 +38,7 @@ Create a `credentials.json` file in the project root. You can start from `creden
                 "mode": "env",
                 "key": "NTFY_TOKEN"
             },
-            "tags": ["sjtu", "sports"],
+            "tags": ["sjtu", "daemon"],
             "priority": "high"
         }
     }
@@ -57,7 +57,13 @@ If you prefer to store the password directly in the file (not recommended), use:
 }
 ```
 
-`notifications.ntfy` is optional. When configured, `sjtu-sportsd` sends an `ntfy.sh` push notification after it successfully creates a sports reservation order.
+`notifications.ntfy` is optional. When configured, the daemons reuse the same `ntfy.sh` topic for operational push notifications:
+
+- `sjtu-sportsd`: successful sports reservation orders
+- `sjtu-checkin`: fresh check-in attempts that succeed or fail
+- `sjtu-door`: open request received, open success/failure, and unauthorized access rejections
+
+Door auth-failure notifications are rate-limited to at most one push per source IP per minute to avoid alert storms.
 
 ## Quick Start
 
