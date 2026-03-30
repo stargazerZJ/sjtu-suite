@@ -20,6 +20,9 @@ class DoorClient(OAuthClientBase):
         """Login to the door opening service."""
         self.logger.debug("Performing login.")
         response = self.session.get(self.base_url + "/ui", allow_redirects=False)
+        if response.status_code == 200:
+            self.logger.info("Existing door session is still valid.")
+            return True
         if response.status_code == 302:
             login_url = response.headers["Location"]
             self.logger.debug("Login required, performing login.")
@@ -34,6 +37,8 @@ class DoorClient(OAuthClientBase):
             else:
                 self.logger.error("Login failed.")
                 return False
+        self.logger.error("Unexpected door login response: HTTP %s", response.status_code)
+        return False
 
     def open_door(self, room_id: str = ""):
         """Open the door."""
@@ -43,9 +48,10 @@ class DoorClient(OAuthClientBase):
             self.base_url + f"/api/key?roomid={get_truncated_room_id(room_id)}"
         )
         if response.status_code == 401:
-            self.login()
+            if not self.login():
+                return False
             response = self.session.get(
-                self.base_url + f"/api/key/roomname?roomid={get_truncated_room_id(room_id)}"
+                self.base_url + f"/api/key?roomid={get_truncated_room_id(room_id)}"
             )
         # success: {"errno":200,"error":"{\"code\":200,\"data\":\"远程开门指令处理完成\",\"operateId\":xxx,\"requestId\":\"xxx\",\"message\":\"OK\"}","total":0}
         # failure: {"errno":403,"error":"你没有权限开启此门！","total":0}
