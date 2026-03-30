@@ -3,6 +3,7 @@ from urllib.parse import urlparse, parse_qs, urljoin
 import re
 import time
 import io
+from html import unescape
 from sjtusuite.core.log import get_logger
 from sjtusuite.core.config import get_password_file
 from .oauth_base import OAuthClientBase
@@ -55,7 +56,10 @@ class JACLogin(OAuthClientBase):
             raise ValueError("Invalid authorization URL")
 
         # Navigate to login page
-        login_url = self.session.get(auth_url, allow_redirects=False).headers["Location"]
+        auth_response = self.session.get(auth_url, allow_redirects=False)
+        login_url = self._resolve_login_transition(auth_response, auth_url)
+        if not login_url:
+            raise ValueError("JAccount authorization flow did not produce a login page.")
 
         current_url = urljoin(self.login_base_url, self.do_login(login_url))
         final_redirect_url = current_url
@@ -64,14 +68,98 @@ class JACLogin(OAuthClientBase):
                 final_redirect_url = current_url
                 break
             redirect_response = self.session.get(current_url, allow_redirects=False)
-            location = redirect_response.headers.get("Location")
-            if not location:
+            next_url = self._resolve_login_transition(redirect_response, current_url)
+            if not next_url:
                 raise ValueError("JAccount login did not produce a redirect target.")
-            current_url = urljoin(current_url, location)
+            current_url = next_url
             final_redirect_url = current_url
         self.save_session()
         self.logger.debug(f"Logged in as {self.username}.")
         return final_redirect_url
+
+    @staticmethod
+    def _extract_html_attributes(tag: str) -> dict[str, str]:
+        attrs = {}
+        for key, value in re.findall(r'([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(".*?"|\'.*?\'|[^\s>]+)', tag):
+            if value[:1] in {'"', "'"}:
+                value = value[1:-1]
+            attrs[key.lower()] = unescape(value)
+        return attrs
+
+    def _extract_html_redirect(self, html: str, current_url: str) -> str | None:
+        meta_match = re.search(
+            r'<meta[^>]+http-equiv=["\']?refresh["\']?[^>]+content=["\'][^"\']*url=([^"\'>]+)',
+            html,
+            re.IGNORECASE,
+        )
+        if meta_match:
+            return urljoin(current_url, unescape(meta_match.group(1).strip()))
+
+        redirect_patterns = (
+            r"""(?:window|top)?\.?location(?:\.href)?\s*=\s*["']([^"']+)["']""",
+            r"""location\.(?:replace|assign)\(\s*["']([^"']+)["']\s*\)""",
+        )
+        for pattern in redirect_patterns:
+            match = re.search(pattern, html, re.IGNORECASE)
+            if match:
+                return urljoin(current_url, unescape(match.group(1).strip()))
+        return None
+
+    def _extract_auto_submit_form(self, html: str, current_url: str) -> tuple[str, str, dict[str, str]] | None:
+        form_match = re.search(r'(<form\b[^>]*>)(.*?)</form>', html, re.IGNORECASE | re.DOTALL)
+        if not form_match:
+            return None
+
+        form_tag, form_body = form_match.groups()
+        form_attrs = self._extract_html_attributes(form_tag)
+        method = form_attrs.get("method", "get").upper()
+        action = urljoin(current_url, form_attrs.get("action", current_url))
+
+        auto_submit = any(
+            marker in html for marker in ("submit()", ".submit(", "document.forms[0]", "document.form.submit")
+        ) or bool(re.search(r'onload\s*=\s*["\'][^"\']*submit\(', html, re.IGNORECASE))
+        has_submit_button = re.search(r'<button\b[^>]*type=["\']?submit|<input\b[^>]*type=["\']?submit', form_body, re.IGNORECASE)
+        if not auto_submit and has_submit_button:
+            return None
+
+        fields = {}
+        for input_match in re.finditer(r'<input\b[^>]*>', form_body, re.IGNORECASE):
+            attrs = self._extract_html_attributes(input_match.group(0))
+            name = attrs.get("name")
+            if name:
+                fields[name] = attrs.get("value", "")
+
+        return method, action, fields
+
+    def _resolve_login_transition(self, response, current_url: str, allow_form_submit: bool = True) -> str | None:
+        location = response.headers.get("Location")
+        if location:
+            return urljoin(current_url, location)
+
+        if response.status_code != 200:
+            return None
+
+        html = response.text
+        redirect_url = self._extract_html_redirect(html, current_url)
+        if redirect_url:
+            return redirect_url
+
+        if not allow_form_submit:
+            return None
+
+        auto_submit_form = self._extract_auto_submit_form(html, current_url)
+        if not auto_submit_form:
+            return None
+
+        method, action, fields = auto_submit_form
+        self.logger.debug("Following HTML form handoff to %s via %s.", action, method)
+        request_kwargs = {"allow_redirects": False}
+        if method == "POST":
+            request_kwargs["data"] = fields
+        else:
+            request_kwargs["params"] = fields
+        handoff_response = self.session.request(method, action, **request_kwargs)
+        return self._resolve_login_transition(handoff_response, action, allow_form_submit=False)
 
     def handle_2fa(self, login_page):
         self.logger.info("Two-Step Verification required.")
