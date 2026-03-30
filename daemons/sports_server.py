@@ -14,8 +14,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from apscheduler.jobstores.base import JobLookupError
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from flask import Flask, jsonify, render_template_string, request
 
 from sjtusuite.auth import JACLogin
@@ -36,6 +38,8 @@ from sjtusuite.servers.base import get_client_ip
 TIMEZONE = "Asia/Shanghai"
 JOBS_FILE = get_data_dir() / "sports_reservation_jobs.json"
 LOG_FILE = get_data_dir() / "sports_reservation_daemon.log"
+JOB_TYPE_TARGET_DATE = "target_date"
+JOB_TYPE_CRON = "cron"
 
 
 logging.basicConfig(filename=str(LOG_FILE), level=logging.INFO)
@@ -76,6 +80,7 @@ class ReservationJob:
     venue_id: str
     venue_name: str
     motion: str
+    job_type: str
     target_date: str
     time_slots: list[str]
     preferred_fields: list[str] = field(default_factory=list)
@@ -83,6 +88,10 @@ class ReservationJob:
     retry_window_seconds: int = 180
     retry_interval_seconds: int = 5
     auto_disable_on_success: bool = True
+    cron_interval_minutes: int = 10
+    window_start_days: int = 0
+    window_end_days: int = 7
+    redeem_deadline_hours: int = 2
     created_at: str = field(default_factory=_now_iso)
     updated_at: str = field(default_factory=_now_iso)
     last_checked_at: str | None = None
@@ -101,13 +110,18 @@ class ReservationJob:
             venue_id=payload["venue_id"],
             venue_name=payload.get("venue_name", payload["venue_id"]),
             motion=payload["motion"],
-            target_date=payload["target_date"],
+            job_type=payload.get("job_type", JOB_TYPE_TARGET_DATE),
+            target_date=payload.get("target_date", ""),
             time_slots=_normalize_time_slots(payload.get("time_slots", [])),
             preferred_fields=_normalize_fields(payload.get("preferred_fields")),
             enabled=bool(payload.get("enabled", True)),
             retry_window_seconds=int(payload.get("retry_window_seconds", 180)),
             retry_interval_seconds=int(payload.get("retry_interval_seconds", 5)),
             auto_disable_on_success=bool(payload.get("auto_disable_on_success", True)),
+            cron_interval_minutes=max(1, int(payload.get("cron_interval_minutes", 10))),
+            window_start_days=max(0, int(payload.get("window_start_days", 0))),
+            window_end_days=max(0, int(payload.get("window_end_days", 7))),
+            redeem_deadline_hours=max(0, int(payload.get("redeem_deadline_hours", 2))),
             created_at=payload.get("created_at", _now_iso()),
             updated_at=payload.get("updated_at", _now_iso()),
             last_checked_at=payload.get("last_checked_at"),
@@ -144,6 +158,7 @@ class SportsReservationDaemon:
         )
         self.jobs: dict[str, ReservationJob] = self._load_jobs()
         self.notifier = NtfyNotifier.from_config(credentials.ntfy_config)
+        self._sync_cron_jobs()
 
     def start(self) -> None:
         self.scheduler.start()
@@ -186,7 +201,50 @@ class SportsReservationDaemon:
         with self.jobs_lock:
             return sorted(
                 self.jobs.values(),
-                key=lambda job: (job.target_date, job.name, job.created_at),
+                key=lambda job: (job.target_date or "9999-12-31", job.name, job.created_at),
+            )
+
+    @staticmethod
+    def _validate_job_type(job_type: str) -> str:
+        normalized = (job_type or JOB_TYPE_TARGET_DATE).strip()
+        if normalized not in {JOB_TYPE_TARGET_DATE, JOB_TYPE_CRON}:
+            raise ValueError(f"Unknown job_type: {job_type}")
+        return normalized
+
+    @staticmethod
+    def _cron_scheduler_job_id(job_id: str) -> str:
+        return f"sports-cron-{job_id}"
+
+    def _sync_cron_jobs(self) -> None:
+        desired: dict[str, ReservationJob] = {}
+        for job in self.jobs.values():
+            if job.job_type == JOB_TYPE_CRON and job.enabled:
+                desired[self._cron_scheduler_job_id(job.job_id)] = job
+
+        current_ids = {
+            item.id
+            for item in self.scheduler.get_jobs()
+            if item.id.startswith("sports-cron-")
+        }
+        for stale_id in current_ids - set(desired):
+            try:
+                self.scheduler.remove_job(stale_id)
+            except JobLookupError:
+                pass
+
+        for scheduler_id, job in desired.items():
+            self.scheduler.add_job(
+                self.run_job,
+                trigger=IntervalTrigger(minutes=job.cron_interval_minutes, timezone=TIMEZONE),
+                id=scheduler_id,
+                replace_existing=True,
+                kwargs={
+                    "job_id": job.job_id,
+                    "dry_run": False,
+                    "triggered_by": JOB_TYPE_CRON,
+                },
+                coalesce=True,
+                max_instances=1,
             )
 
     def get_job(self, job_id: str) -> ReservationJob:
@@ -201,15 +259,30 @@ class SportsReservationDaemon:
         if not time_slots:
             raise ValueError("Choose at least one time slot.")
 
-        target_date = payload.get("target_date", "")
-        _parse_date(target_date)
+        job_type = self._validate_job_type(payload.get("job_type", JOB_TYPE_TARGET_DATE))
+        target_date = (payload.get("target_date") or "").strip()
+        if job_type == JOB_TYPE_TARGET_DATE:
+            if not target_date:
+                raise ValueError("Choose a target date.")
+            _parse_date(target_date)
+
+        window_start_days = max(0, int(payload.get("window_start_days", 0)))
+        window_end_days = max(0, int(payload.get("window_end_days", 7)))
+        if window_end_days < window_start_days:
+            raise ValueError("window_end_days must be greater than or equal to window_start_days.")
 
         job = ReservationJob(
             job_id=str(uuid.uuid4()),
-            name=(payload.get("name") or "").strip() or f"{payload['motion']} {target_date}",
+            name=(payload.get("name") or "").strip()
+            or (
+                f"{payload['motion']} {target_date}"
+                if job_type == JOB_TYPE_TARGET_DATE
+                else f"{payload['motion']} cron"
+            ),
             venue_id=payload["venue_id"].strip(),
             venue_name=(payload.get("venue_name") or payload["venue_id"]).strip(),
             motion=payload["motion"].strip(),
+            job_type=job_type,
             target_date=target_date,
             time_slots=time_slots,
             preferred_fields=_normalize_fields(payload.get("preferred_fields")),
@@ -217,10 +290,15 @@ class SportsReservationDaemon:
             retry_window_seconds=max(10, int(payload.get("retry_window_seconds", 180))),
             retry_interval_seconds=max(1, int(payload.get("retry_interval_seconds", 5))),
             auto_disable_on_success=bool(payload.get("auto_disable_on_success", True)),
+            cron_interval_minutes=max(1, int(payload.get("cron_interval_minutes", 10))),
+            window_start_days=window_start_days,
+            window_end_days=window_end_days,
+            redeem_deadline_hours=max(0, int(payload.get("redeem_deadline_hours", 2))),
         )
         with self.jobs_lock:
             self.jobs[job.job_id] = job
             self._save_jobs()
+            self._sync_cron_jobs()
         self.record_history(job, "created", True, "Reservation job created.")
         return job
 
@@ -237,9 +315,15 @@ class SportsReservationDaemon:
                 job.venue_name = payload["venue_name"].strip() or job.venue_name
             if "motion" in payload:
                 job.motion = payload["motion"].strip()
+            if "job_type" in payload:
+                job.job_type = self._validate_job_type(payload["job_type"])
             if "target_date" in payload:
-                _parse_date(payload["target_date"])
-                job.target_date = payload["target_date"]
+                target_date = (payload["target_date"] or "").strip()
+                if job.job_type == JOB_TYPE_TARGET_DATE:
+                    if not target_date:
+                        raise ValueError("Choose a target date.")
+                    _parse_date(target_date)
+                job.target_date = target_date
             if "time_slots" in payload:
                 time_slots = _normalize_time_slots(payload["time_slots"])
                 if not time_slots:
@@ -255,8 +339,22 @@ class SportsReservationDaemon:
                 job.retry_interval_seconds = max(1, int(payload["retry_interval_seconds"]))
             if "auto_disable_on_success" in payload:
                 job.auto_disable_on_success = bool(payload["auto_disable_on_success"])
+            if "cron_interval_minutes" in payload:
+                job.cron_interval_minutes = max(1, int(payload["cron_interval_minutes"]))
+            if "window_start_days" in payload:
+                job.window_start_days = max(0, int(payload["window_start_days"]))
+            if "window_end_days" in payload:
+                job.window_end_days = max(0, int(payload["window_end_days"]))
+            if "redeem_deadline_hours" in payload:
+                job.redeem_deadline_hours = max(0, int(payload["redeem_deadline_hours"]))
+
+            if job.job_type == JOB_TYPE_TARGET_DATE and not job.target_date:
+                raise ValueError("Choose a target date.")
+            if job.window_end_days < job.window_start_days:
+                raise ValueError("window_end_days must be greater than or equal to window_start_days.")
             job.updated_at = _now_iso()
             self._save_jobs()
+            self._sync_cron_jobs()
             return job
 
     def delete_job(self, job_id: str) -> None:
@@ -265,6 +363,7 @@ class SportsReservationDaemon:
             if not job:
                 raise KeyError(job_id)
             self._save_jobs()
+            self._sync_cron_jobs()
         self.record_history(job, "deleted", True, "Reservation job deleted.")
 
     def record_history(
@@ -376,6 +475,9 @@ class SportsReservationDaemon:
         return selected, missing
 
     def build_job_preview(self, client: SportsReservationClient, job: ReservationJob) -> dict[str, Any]:
+        if job.job_type == JOB_TYPE_CRON:
+            return self._build_cron_preview(client, job)
+
         motion_type = client.resolve_motion_type(job.venue_id, job.motion)
         date_options = client.list_date_options(job.venue_id, motion_type.id)
         date_map = {item.date: item for item in date_options}
@@ -414,6 +516,79 @@ class SportsReservationDaemon:
             "total_price": f"{total_price:.2f}",
         }
 
+    @staticmethod
+    def _slot_start_at(date_str: str, time_slot: str) -> datetime:
+        start_text = time_slot.split("-", 1)[0]
+        return datetime.strptime(f"{date_str} {start_text}", "%Y-%m-%d %H:%M")
+
+    def _build_cron_preview(self, client: SportsReservationClient, job: ReservationJob) -> dict[str, Any]:
+        motion_type = client.resolve_motion_type(job.venue_id, job.motion)
+        date_options = client.list_date_options(job.venue_id, motion_type.id)
+        today = _now().date()
+        window_start = today + timedelta(days=job.window_start_days)
+        window_end = today + timedelta(days=job.window_end_days)
+        wanted_times = set(job.time_slots)
+        now = _now()
+        saw_date_in_window = False
+        cutoff_filtered = False
+
+        for date_option in date_options:
+            date_value = _parse_date(date_option.date)
+            if date_value < window_start or date_value > window_end:
+                continue
+            saw_date_in_window = True
+            live_slots = client.list_available_slots(
+                job.venue_id,
+                motion_type.id,
+                date=date_option.date,
+                date_id=date_option.date_id,
+            )
+            filtered_slots: list[FieldSlot] = []
+            for slot in live_slots:
+                if slot.time_slot not in wanted_times:
+                    continue
+                slot_start = self._slot_start_at(date_option.date, slot.time_slot)
+                if slot_start - now < timedelta(hours=job.redeem_deadline_hours):
+                    cutoff_filtered = True
+                    continue
+                filtered_slots.append(slot)
+
+            selected_slots, missing = self._choose_slots(
+                slots=filtered_slots,
+                time_slots=job.time_slots,
+                preferred_fields=job.preferred_fields,
+            )
+            if missing:
+                continue
+
+            selected_spaces = client.build_selected_spaces(selected_slots)
+            payload = client.build_confirm_order_payload(
+                venue_id=job.venue_id,
+                motion_type=motion_type,
+                date_option=date_option,
+                selected_spaces=selected_spaces,
+            )
+            total_price = sum(float(space["venuePrice"]) for space in selected_spaces)
+            return {
+                "motion_type": asdict(motion_type),
+                "date_option": asdict(date_option),
+                "selected_slots": [asdict(slot) for slot in selected_slots],
+                "confirm_order_payload": payload,
+                "total_price": f"{total_price:.2f}",
+            }
+
+        if not saw_date_in_window:
+            raise SportsAPIError(
+                f"No reservable dates are currently exposed between {window_start.isoformat()} and {window_end.isoformat()}."
+            )
+        if cutoff_filtered:
+            raise SportsAPIError(
+                "Matching slots exist but are already past the redeem deadline."
+            )
+        raise SportsAPIError(
+            "No selectable slots are available in the configured cron window for the requested time slots."
+        )
+
     def _mark_job(
         self,
         job: ReservationJob,
@@ -440,6 +615,7 @@ class SportsReservationDaemon:
                 if job.auto_disable_on_success:
                     job.enabled = False
             self._save_jobs()
+            self._sync_cron_jobs()
 
     def run_job(
         self,
@@ -451,21 +627,27 @@ class SportsReservationDaemon:
         with self.run_lock:
             job = self.get_job(job_id)
             today = _now().date()
-            target_date = _parse_date(job.target_date)
-            if target_date < today:
-                self._mark_job(job, status="expired", message="Target date has already passed.")
-                self.record_history(job, triggered_by, False, "Target date has already passed.")
-                return {"ok": False, "message": "Target date has already passed."}
-            if triggered_by == "schedule" and target_date > today + timedelta(days=7):
+            if job.job_type == JOB_TYPE_TARGET_DATE:
+                target_date = _parse_date(job.target_date)
+                if target_date < today:
+                    self._mark_job(job, status="expired", message="Target date has already passed.")
+                    self.record_history(job, triggered_by, False, "Target date has already passed.")
+                    return {"ok": False, "message": "Target date has already passed."}
+            if (
+                job.job_type == JOB_TYPE_TARGET_DATE
+                and triggered_by == "schedule"
+                and _parse_date(job.target_date) > today + timedelta(days=7)
+            ):
                 message = "Still outside the current booking window."
                 self._mark_job(job, status="waiting_window", message=message)
                 self.record_history(job, triggered_by, True, message)
                 return {"ok": True, "message": message}
-            if not dry_run and not job.enabled and triggered_by == "schedule":
+            if not dry_run and not job.enabled and triggered_by in {"schedule", JOB_TYPE_CRON}:
                 return {"ok": False, "message": "Job is disabled."}
 
             client = self.create_client()
-            deadline = time.time() + (job.retry_window_seconds if not dry_run else 0)
+            retry_window_seconds = job.retry_window_seconds if job.job_type == JOB_TYPE_TARGET_DATE else 0
+            deadline = time.time() + (retry_window_seconds if not dry_run else 0)
             attempt_count = 0
             while True:
                 attempt_count += 1
@@ -598,7 +780,7 @@ class SportsReservationDaemon:
 
     def run_scheduled_jobs(self) -> None:
         for job in self.list_jobs():
-            if not job.enabled:
+            if not job.enabled or job.job_type != JOB_TYPE_TARGET_DATE:
                 continue
             try:
                 self.run_job(job.job_id, dry_run=False, triggered_by="schedule")
@@ -717,6 +899,7 @@ button:hover { opacity: 0.85; }
     border-radius: 8px; padding: 12px; margin-top: 0.75rem;
     background: rgba(255,255,255,0.04); color: var(--sub-text); font-size: 0.85rem; line-height: 1.6;
 }
+.hidden { display: none !important; }
 
 /* Jobs List */
 .job {
@@ -791,6 +974,19 @@ button:hover { opacity: 0.85; }
             <label for="jobName">Job name</label>
             <input id="jobName" placeholder="e.g. Monday ping pong">
         </div>
+        <div class="field-pair">
+            <div class="field-row">
+                <label for="jobType">Mode</label>
+                <select id="jobType" onchange="toggleJobMode()">
+                    <option value="target_date">Target date</option>
+                    <option value="cron">Cron watcher</option>
+                </select>
+            </div>
+            <div class="field-row" id="targetDateRow">
+                <label for="targetDate">Date</label>
+                <input id="targetDate" type="date">
+            </div>
+        </div>
         <div class="field-row">
             <label for="venueSearch">Venue search</label>
             <div class="inline-row">
@@ -811,9 +1007,29 @@ button:hover { opacity: 0.85; }
                     <option value="">Choose motion</option>
                 </select>
             </div>
+            <div class="field-row" id="retryWindowRow">
+                <label for="retryWindow">Retry window (s)</label>
+                <input id="retryWindow" type="number" min="10" value="180">
+            </div>
+        </div>
+        <div class="field-pair hidden" id="cronWindowRows">
             <div class="field-row">
-                <label for="targetDate">Date</label>
-                <input id="targetDate" type="date">
+                <label for="windowStartDays">Window start (days from now)</label>
+                <input id="windowStartDays" type="number" min="0" value="0">
+            </div>
+            <div class="field-row">
+                <label for="windowEndDays">Window end (days from now)</label>
+                <input id="windowEndDays" type="number" min="0" value="7">
+            </div>
+        </div>
+        <div class="field-pair hidden" id="cronTimingRows">
+            <div class="field-row">
+                <label for="cronIntervalMinutes">Check every (min)</label>
+                <input id="cronIntervalMinutes" type="number" min="1" value="10">
+            </div>
+            <div class="field-row">
+                <label for="redeemDeadlineHours">Redeem deadline (hr before start)</label>
+                <input id="redeemDeadlineHours" type="number" min="0" value="2">
             </div>
         </div>
         <div class="field-pair">
@@ -822,8 +1038,8 @@ button:hover { opacity: 0.85; }
                 <input id="preferredFields" placeholder="Optional, comma sep.">
             </div>
             <div class="field-row">
-                <label for="retryWindow">Retry window (s)</label>
-                <input id="retryWindow" type="number" min="10" value="180">
+                <label for="retryInterval">Retry interval (s)</label>
+                <input id="retryInterval" type="number" min="1" value="5">
             </div>
         </div>
         <div class="field-row">
@@ -834,6 +1050,7 @@ button:hover { opacity: 0.85; }
             <button type="button" class="btn-primary" onclick="createJob()">Save job</button>
             <button type="button" class="btn-ghost" onclick="refreshStatus()">Refresh</button>
         </div>
+        <div id="modeHelp" class="info-box">Target-date mode opens the booking right at noon for a specific date. Cron watcher mode scans every few minutes for newly freed slots inside a configurable date window and books before the redeem cutoff.</div>
         <div id="availabilityBox" class="info-box">Search a venue to see availability.</div>
     </div>
 
@@ -865,6 +1082,15 @@ function esc(v) {
 
 function selectedTimeSlots() {
     return [...document.querySelectorAll('input[name="timeSlot"]:checked')].map(i => i.value);
+}
+
+function toggleJobMode() {
+    const mode = document.getElementById("jobType").value;
+    const isCron = mode === "cron";
+    document.getElementById("targetDateRow").classList.toggle("hidden", isCron);
+    document.getElementById("retryWindowRow").classList.toggle("hidden", isCron);
+    document.getElementById("cronWindowRows").classList.toggle("hidden", !isCron);
+    document.getElementById("cronTimingRows").classList.toggle("hidden", !isCron);
 }
 
 function renderTimeSlots() {
@@ -922,16 +1148,22 @@ async function loadAvailability() {
 
 async function createJob() {
     const sel = document.getElementById("venueSelect");
+    const jobType = document.getElementById("jobType").value;
     const payload = {
+        job_type: jobType,
         name: document.getElementById("jobName").value.trim(),
         venue_id: sel.value,
         venue_name: sel.selectedOptions[0]?.textContent?.split(" · ")[0] || "",
         motion: document.getElementById("motionSelect").value,
-        target_date: document.getElementById("targetDate").value,
+        target_date: jobType === "target_date" ? document.getElementById("targetDate").value : "",
         preferred_fields: document.getElementById("preferredFields").value,
         time_slots: selectedTimeSlots(),
         retry_window_seconds: Number(document.getElementById("retryWindow").value || 180),
-        retry_interval_seconds: 5,
+        retry_interval_seconds: Number(document.getElementById("retryInterval").value || 5),
+        cron_interval_minutes: Number(document.getElementById("cronIntervalMinutes").value || 10),
+        window_start_days: Number(document.getElementById("windowStartDays").value || 0),
+        window_end_days: Number(document.getElementById("windowEndDays").value || 7),
+        redeem_deadline_hours: Number(document.getElementById("redeemDeadlineHours").value || 2),
         enabled: true,
     };
     await api("/api/jobs", { method: "POST", body: JSON.stringify(payload) });
@@ -973,7 +1205,10 @@ function renderJobs(jobs) {
                     <div class="job-name">${esc(j.name)}</div>
                     <div class="job-meta">
                         ${esc(j.venue_name)} · ${esc(j.motion)}<br>
-                        ${esc(j.target_date)} · ${esc(j.time_slots.join(", "))}<br>
+                        ${j.job_type === "cron"
+                            ? `Cron every ${esc(j.cron_interval_minutes)} min · Days +${esc(j.window_start_days)} to +${esc(j.window_end_days)}<br>Redeem cutoff: ${esc(j.redeem_deadline_hours)} hr · Slots: ${esc(j.time_slots.join(", "))}`
+                            : `${esc(j.target_date)} · ${esc(j.time_slots.join(", "))}<br>Retry window: ${esc(j.retry_window_seconds)} s`
+                        }<br>
                         Fields: ${esc(j.preferred_fields.join(", ") || "Any")}
                     </div>
                 </div>
@@ -1020,6 +1255,7 @@ async function refreshStatus() {
 }
 
 renderTimeSlots();
+toggleJobMode();
 refreshStatus();
 setInterval(refreshStatus, 15000);
 </script>
