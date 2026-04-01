@@ -86,7 +86,7 @@ class ReservationJob:
     preferred_fields: list[str] = field(default_factory=list)
     enabled: bool = True
     retry_window_seconds: int = 180
-    retry_interval_seconds: int = 5
+    retry_interval_seconds: float = 1.0
     auto_disable_on_success: bool = True
     cron_interval_minutes: int = 10
     window_start_days: int = 0
@@ -116,7 +116,7 @@ class ReservationJob:
             preferred_fields=_normalize_fields(payload.get("preferred_fields")),
             enabled=bool(payload.get("enabled", True)),
             retry_window_seconds=int(payload.get("retry_window_seconds", 180)),
-            retry_interval_seconds=int(payload.get("retry_interval_seconds", 5)),
+            retry_interval_seconds=float(payload.get("retry_interval_seconds", 1.0)),
             auto_disable_on_success=bool(payload.get("auto_disable_on_success", True)),
             cron_interval_minutes=max(1, int(payload.get("cron_interval_minutes", 10))),
             window_start_days=max(0, int(payload.get("window_start_days", 0))),
@@ -135,6 +135,12 @@ class ReservationJob:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(slots=True)
+class PreparedTargetDateJob:
+    motion_type: MotionType
+    date_option: DateOption | None = None
 
 
 class SportsReservationDaemon:
@@ -288,7 +294,7 @@ class SportsReservationDaemon:
             preferred_fields=_normalize_fields(payload.get("preferred_fields")),
             enabled=bool(payload.get("enabled", True)),
             retry_window_seconds=max(10, int(payload.get("retry_window_seconds", 180))),
-            retry_interval_seconds=max(1, int(payload.get("retry_interval_seconds", 5))),
+            retry_interval_seconds=max(0.2, float(payload.get("retry_interval_seconds", 1.0))),
             auto_disable_on_success=bool(payload.get("auto_disable_on_success", True)),
             cron_interval_minutes=max(1, int(payload.get("cron_interval_minutes", 10))),
             window_start_days=window_start_days,
@@ -336,7 +342,7 @@ class SportsReservationDaemon:
             if "retry_window_seconds" in payload:
                 job.retry_window_seconds = max(10, int(payload["retry_window_seconds"]))
             if "retry_interval_seconds" in payload:
-                job.retry_interval_seconds = max(1, int(payload["retry_interval_seconds"]))
+                job.retry_interval_seconds = max(0.2, float(payload["retry_interval_seconds"]))
             if "auto_disable_on_success" in payload:
                 job.auto_disable_on_success = bool(payload["auto_disable_on_success"])
             if "cron_interval_minutes" in payload:
@@ -474,18 +480,37 @@ class SportsReservationDaemon:
             selected.append(candidates[0])
         return selected, missing
 
-    def build_job_preview(self, client: SportsReservationClient, job: ReservationJob) -> dict[str, Any]:
+    def _prepare_target_date_job(
+        self,
+        client: SportsReservationClient,
+        job: ReservationJob,
+    ) -> PreparedTargetDateJob:
+        return PreparedTargetDateJob(
+            motion_type=client.resolve_motion_type(job.venue_id, job.motion),
+        )
+
+    def build_job_preview(
+        self,
+        client: SportsReservationClient,
+        job: ReservationJob,
+        *,
+        prepared: PreparedTargetDateJob | None = None,
+    ) -> dict[str, Any]:
         if job.job_type == JOB_TYPE_CRON:
             return self._build_cron_preview(client, job)
 
-        motion_type = client.resolve_motion_type(job.venue_id, job.motion)
-        date_options = client.list_date_options(job.venue_id, motion_type.id)
-        date_map = {item.date: item for item in date_options}
-        if job.target_date not in date_map:
-            raise SportsAPIError(
-                f"{job.target_date} is not in the current reservation window yet."
-            )
-        date_option: DateOption = date_map[job.target_date]
+        prepared = prepared or self._prepare_target_date_job(client, job)
+        motion_type = prepared.motion_type
+        date_option = prepared.date_option
+        if not date_option or date_option.date != job.target_date:
+            date_options = client.list_date_options(job.venue_id, motion_type.id)
+            date_map = {item.date: item for item in date_options}
+            if job.target_date not in date_map:
+                raise SportsAPIError(
+                    f"{job.target_date} is not in the current reservation window yet."
+                )
+            date_option = date_map[job.target_date]
+            prepared.date_option = date_option
         live_slots = client.list_available_slots(
             job.venue_id,
             motion_type.id,
@@ -648,11 +673,20 @@ class SportsReservationDaemon:
             client = self.create_client()
             retry_window_seconds = job.retry_window_seconds if job.job_type == JOB_TYPE_TARGET_DATE else 0
             deadline = time.time() + (retry_window_seconds if not dry_run else 0)
+            prepared_target_job = (
+                self._prepare_target_date_job(client, job)
+                if job.job_type == JOB_TYPE_TARGET_DATE
+                else None
+            )
             attempt_count = 0
             while True:
                 attempt_count += 1
                 try:
-                    preview = self.build_job_preview(client, job)
+                    preview = self.build_job_preview(
+                        client,
+                        job,
+                        prepared=prepared_target_job,
+                    )
                 except SportsAPIError as exc:
                     message = str(exc)
                     should_retry = (
@@ -1039,7 +1073,7 @@ button:hover { opacity: 0.85; }
             </div>
             <div class="field-row" id="retryIntervalRow">
                 <label for="retryInterval">重试间隔 (秒)</label>
-                <input id="retryInterval" type="number" min="1" value="5">
+                <input id="retryInterval" type="number" min="0.2" step="0.1" value="1.0">
             </div>
         </div>
         <div class="field-row">
@@ -1160,7 +1194,7 @@ async function createJob() {
         preferred_fields: document.getElementById("preferredFields").value,
         time_slots: selectedTimeSlots(),
         retry_window_seconds: Number(document.getElementById("retryWindow").value || 180),
-        retry_interval_seconds: Number(document.getElementById("retryInterval").value || 5),
+        retry_interval_seconds: Number(document.getElementById("retryInterval").value || 1.0),
         cron_interval_minutes: Number(document.getElementById("cronIntervalMinutes").value || 10),
         window_start_days: Number(document.getElementById("windowStartDays").value || 0),
         window_end_days: Number(document.getElementById("windowEndDays").value || 7),
