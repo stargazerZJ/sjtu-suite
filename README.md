@@ -125,7 +125,7 @@ sjtu-sportsd --host 0.0.0.0 -p 5003      # Expose the dashboard on all network i
 
 The sports daemon supports two job modes:
 
-- `target_date`: the existing noon-opening watcher for a specific reservation date one week out
+- `target_date`: a noon-opening watcher for a specific reservation date; the dashboard now lets you choose which day's `12:00` should trigger the booking attempt, defaulting to the first upcoming noon
 - `cron`: a cancellation watcher that scans every `N` minutes for free slots inside a configurable date window and only books slots that are still before the redeem cutoff (default `2` hours before start)
 
 ### As Daemons (Long-Running Services)
@@ -270,7 +270,7 @@ sjtu-sportsd --host 0.0.0.0 -p 5003
 # open http://<server-ip>:5003/ from another device on the same network
 ```
 
-By default the daemon binds to `127.0.0.1` and uses `credentials.json` for long-running login refresh. Use `--host` if you want a different bind address, and `sjtu-sportsd --from-browser` for live testing while the managed Playwright browser is logged in.
+By default the daemon binds to `127.0.0.1` and uses `credentials.json` for long-running login refresh. In `target_date` mode, new dashboard jobs default to the first upcoming noon, but you can override the exact run date if you want a later `12:00` trigger. Use `--host` if you want a different bind address, and `sjtu-sportsd --from-browser` for live testing while the managed Playwright browser is logged in.
 
 ## Environment
 

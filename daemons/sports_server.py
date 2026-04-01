@@ -57,6 +57,30 @@ def _parse_date(value: str) -> datetime.date:
     return datetime.strptime(value, "%Y-%m-%d").date()
 
 
+def _parse_datetime(value: str) -> datetime:
+    return datetime.fromisoformat(value)
+
+
+def _next_noon_run_date(reference: datetime | None = None) -> datetime.date:
+    now = reference or _now()
+    noon = now.replace(hour=12, minute=0, second=0, microsecond=0)
+    return now.date() if now <= noon else (now + timedelta(days=1)).date()
+
+
+def _next_noon_run_date_iso(reference: datetime | None = None) -> str:
+    return _next_noon_run_date(reference).isoformat()
+
+
+def _run_date_message(run_on_date: str | None) -> str:
+    if run_on_date:
+        return f"Waiting for scheduled noon run on {run_on_date}."
+    return "Waiting for the noon reservation window."
+
+
+def _cron_waiting_message() -> str:
+    return "Waiting for the next cron scan."
+
+
 def _normalize_time_slots(values: list[str] | tuple[str, ...] | str) -> list[str]:
     if isinstance(values, str):
         values = [item.strip() for item in values.split(",")]
@@ -83,6 +107,7 @@ class ReservationJob:
     job_type: str
     target_date: str
     time_slots: list[str]
+    run_on_date: str | None = None
     preferred_fields: list[str] = field(default_factory=list)
     enabled: bool = True
     retry_window_seconds: int = 180
@@ -104,6 +129,16 @@ class ReservationJob:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "ReservationJob":
+        created_at = payload.get("created_at", _now_iso())
+        run_on_date = payload.get("run_on_date")
+        if run_on_date is not None:
+            run_on_date = (run_on_date or "").strip() or None
+        legacy_created_at = None
+        if run_on_date is None and payload.get("job_type", JOB_TYPE_TARGET_DATE) == JOB_TYPE_TARGET_DATE:
+            try:
+                legacy_created_at = _parse_datetime(created_at)
+            except ValueError:
+                legacy_created_at = None
         return cls(
             job_id=payload["job_id"],
             name=payload["name"],
@@ -112,6 +147,7 @@ class ReservationJob:
             motion=payload["motion"],
             job_type=payload.get("job_type", JOB_TYPE_TARGET_DATE),
             target_date=payload.get("target_date", ""),
+            run_on_date=run_on_date if run_on_date is not None else None,
             time_slots=_normalize_time_slots(payload.get("time_slots", [])),
             preferred_fields=_normalize_fields(payload.get("preferred_fields")),
             enabled=bool(payload.get("enabled", True)),
@@ -122,11 +158,14 @@ class ReservationJob:
             window_start_days=max(0, int(payload.get("window_start_days", 0))),
             window_end_days=max(0, int(payload.get("window_end_days", 7))),
             redeem_deadline_hours=max(0, int(payload.get("redeem_deadline_hours", 2))),
-            created_at=payload.get("created_at", _now_iso()),
+            created_at=created_at,
             updated_at=payload.get("updated_at", _now_iso()),
             last_checked_at=payload.get("last_checked_at"),
             last_status=payload.get("last_status", "idle"),
-            last_message=payload.get("last_message", ""),
+            last_message=payload.get(
+                "last_message",
+                _run_date_message(_next_noon_run_date_iso(legacy_created_at)) if legacy_created_at else "",
+            ),
             last_order_id=payload.get("last_order_id"),
             last_payment_url=payload.get("last_payment_url"),
             last_payment_init=payload.get("last_payment_init"),
@@ -253,6 +292,22 @@ class SportsReservationDaemon:
                 max_instances=1,
             )
 
+    @staticmethod
+    def _normalize_run_on_date(value: Any) -> str | None:
+        text = (value or "").strip()
+        if not text:
+            return None
+        _parse_date(text)
+        return text
+
+    @staticmethod
+    def _validate_target_run_on_date(run_on_date: str) -> str:
+        scheduled_date = _parse_date(run_on_date)
+        scheduled_noon = datetime.combine(scheduled_date, datetime.min.time()).replace(hour=12)
+        if scheduled_noon < _now():
+            raise ValueError("Choose a scheduled noon that has not passed yet.")
+        return run_on_date
+
     def get_job(self, job_id: str) -> ReservationJob:
         with self.jobs_lock:
             job = self.jobs.get(job_id)
@@ -267,10 +322,14 @@ class SportsReservationDaemon:
 
         job_type = self._validate_job_type(payload.get("job_type", JOB_TYPE_TARGET_DATE))
         target_date = (payload.get("target_date") or "").strip()
+        run_on_date = self._normalize_run_on_date(payload.get("run_on_date"))
         if job_type == JOB_TYPE_TARGET_DATE:
             if not target_date:
                 raise ValueError("Choose a target date.")
             _parse_date(target_date)
+            run_on_date = self._validate_target_run_on_date(run_on_date or _next_noon_run_date_iso())
+        else:
+            run_on_date = None
 
         window_start_days = max(0, int(payload.get("window_start_days", 0)))
         window_end_days = max(0, int(payload.get("window_end_days", 7)))
@@ -290,6 +349,7 @@ class SportsReservationDaemon:
             motion=payload["motion"].strip(),
             job_type=job_type,
             target_date=target_date,
+            run_on_date=run_on_date,
             time_slots=time_slots,
             preferred_fields=_normalize_fields(payload.get("preferred_fields")),
             enabled=bool(payload.get("enabled", True)),
@@ -300,12 +360,17 @@ class SportsReservationDaemon:
             window_start_days=window_start_days,
             window_end_days=window_end_days,
             redeem_deadline_hours=max(0, int(payload.get("redeem_deadline_hours", 2))),
+            last_status="waiting_schedule" if job_type == JOB_TYPE_TARGET_DATE else "idle",
+            last_message=_run_date_message(run_on_date) if job_type == JOB_TYPE_TARGET_DATE else _cron_waiting_message(),
         )
         with self.jobs_lock:
             self.jobs[job.job_id] = job
             self._save_jobs()
             self._sync_cron_jobs()
-        self.record_history(job, "created", True, "Reservation job created.")
+        created_message = "Reservation job created."
+        if job.job_type == JOB_TYPE_TARGET_DATE and job.run_on_date:
+            created_message = f"Reservation job created for noon on {job.run_on_date}."
+        self.record_history(job, "created", True, created_message)
         return job
 
     def update_job(self, job_id: str, payload: dict[str, Any]) -> ReservationJob:
@@ -330,6 +395,10 @@ class SportsReservationDaemon:
                         raise ValueError("Choose a target date.")
                     _parse_date(target_date)
                 job.target_date = target_date
+            if "run_on_date" in payload:
+                job.run_on_date = self._normalize_run_on_date(payload["run_on_date"])
+            elif "job_type" in payload and job.job_type == JOB_TYPE_TARGET_DATE and not job.run_on_date:
+                job.run_on_date = _next_noon_run_date_iso()
             if "time_slots" in payload:
                 time_slots = _normalize_time_slots(payload["time_slots"])
                 if not time_slots:
@@ -356,6 +425,16 @@ class SportsReservationDaemon:
 
             if job.job_type == JOB_TYPE_TARGET_DATE and not job.target_date:
                 raise ValueError("Choose a target date.")
+            if job.job_type == JOB_TYPE_TARGET_DATE:
+                job.run_on_date = self._validate_target_run_on_date(job.run_on_date or _next_noon_run_date_iso())
+                if job.last_status in {"idle", "waiting_schedule"}:
+                    job.last_message = _run_date_message(job.run_on_date)
+                    job.last_status = "waiting_schedule"
+            else:
+                job.run_on_date = None
+                if job.last_status in {"idle", "waiting_schedule"}:
+                    job.last_message = _cron_waiting_message()
+                    job.last_status = "idle"
             if job.window_end_days < job.window_start_days:
                 raise ValueError("window_end_days must be greater than or equal to window_start_days.")
             job.updated_at = _now_iso()
@@ -813,9 +892,20 @@ class SportsReservationDaemon:
         }
 
     def run_scheduled_jobs(self) -> None:
+        today = _now().date()
         for job in self.list_jobs():
             if not job.enabled or job.job_type != JOB_TYPE_TARGET_DATE:
                 continue
+            if job.run_on_date:
+                scheduled_date = _parse_date(job.run_on_date)
+                if scheduled_date > today:
+                    continue
+                if scheduled_date < today:
+                    if job.last_status in {"idle", "waiting_schedule"}:
+                        message = f"Scheduled noon on {job.run_on_date} has already passed."
+                        self._mark_job(job, status="missed_schedule", message=message)
+                        self.record_history(job, "schedule", False, message)
+                    continue
             try:
                 self.run_job(job.job_id, dry_run=False, triggered_by="schedule")
             except Exception as exc:  # pragma: no cover - defensive logging
@@ -1021,6 +1111,10 @@ button:hover { opacity: 0.85; }
                 <input id="targetDate" type="date">
             </div>
         </div>
+        <div class="field-row" id="runOnDateRow">
+            <label for="runOnDate">运行日期（当天中午）</label>
+            <input id="runOnDate" type="date">
+        </div>
         <div class="field-row">
             <label for="venueSearch">场馆搜索</label>
             <div class="inline-row">
@@ -1084,7 +1178,7 @@ button:hover { opacity: 0.85; }
             <button type="button" class="btn-primary" onclick="createJob()">保存任务</button>
             <button type="button" class="btn-ghost" onclick="refreshStatus()">刷新</button>
         </div>
-        <div id="modeHelp" class="info-box">指定日期模式将在中午抢定特定日期的场馆。定时监控模式将每隔几分钟扫描配置的日期窗口内的新释放场地，并在下单截止前预订。</div>
+        <div id="modeHelp" class="info-box">指定日期模式默认会在下一个到来的中午运行，你也可以手动指定具体哪一天中午执行。定时监控模式将每隔几分钟扫描配置的日期窗口内的新释放场地，并在下单截止前预订。</div>
         <div id="availabilityBox" class="info-box">搜索场馆以查看可用性。</div>
     </div>
 
@@ -1118,14 +1212,40 @@ function selectedTimeSlots() {
     return [...document.querySelectorAll('input[name="timeSlot"]:checked')].map(i => i.value);
 }
 
+function formatLocalDate(date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+}
+
+function defaultRunOnDateValue() {
+    const now = new Date();
+    const noonPassed =
+        now.getHours() > 12 ||
+        (now.getHours() === 12 && (now.getMinutes() > 0 || now.getSeconds() > 0 || now.getMilliseconds() > 0));
+    const runDate = new Date(now);
+    if (noonPassed) runDate.setDate(runDate.getDate() + 1);
+    return formatLocalDate(runDate);
+}
+
+function resetRunOnDateDefault(force = false) {
+    const input = document.getElementById("runOnDate");
+    if (force || !input.value) {
+        input.value = defaultRunOnDateValue();
+    }
+}
+
 function toggleJobMode() {
     const mode = document.getElementById("jobType").value;
     const isCron = mode === "cron";
     document.getElementById("targetDateRow").classList.toggle("hidden", isCron);
+    document.getElementById("runOnDateRow").classList.toggle("hidden", isCron);
     document.getElementById("retryWindowRow").classList.toggle("hidden", isCron);
     document.getElementById("retryIntervalRow").classList.toggle("hidden", isCron);
     document.getElementById("cronWindowRows").classList.toggle("hidden", !isCron);
     document.getElementById("cronTimingRows").classList.toggle("hidden", !isCron);
+    if (!isCron) resetRunOnDateDefault();
 }
 
 function renderTimeSlots() {
@@ -1191,6 +1311,7 @@ async function createJob() {
         venue_name: sel.selectedOptions[0]?.textContent?.split(" · ")[0] || "",
         motion: document.getElementById("motionSelect").value,
         target_date: jobType === "target_date" ? document.getElementById("targetDate").value : "",
+        run_on_date: jobType === "target_date" ? document.getElementById("runOnDate").value : "",
         preferred_fields: document.getElementById("preferredFields").value,
         time_slots: selectedTimeSlots(),
         retry_window_seconds: Number(document.getElementById("retryWindow").value || 180),
@@ -1204,6 +1325,7 @@ async function createJob() {
     await api("/api/jobs", { method: "POST", body: JSON.stringify(payload) });
     document.getElementById("jobName").value = "";
     document.getElementById("preferredFields").value = "";
+    resetRunOnDateDefault(true);
     document.querySelectorAll('input[name="timeSlot"]').forEach(i => { i.checked = false; });
     await refreshStatus();
 }
@@ -1226,7 +1348,7 @@ async function runJob(id, dry) {
 
 function statusClass(s) {
     if (["success","idle"].includes(s)) return "st-success";
-    if (["waiting_window","no_slots","preview_ready"].includes(s)) return "st-waiting_window";
+    if (["waiting_window","waiting_schedule","no_slots","preview_ready"].includes(s)) return "st-waiting_window";
     return "st-submit_failed";
 }
 
@@ -1242,7 +1364,7 @@ function renderJobs(jobs) {
                         ${esc(j.venue_name)} · ${esc(j.motion)}<br>
                         ${j.job_type === "cron"
                             ? `定时检查 每 ${esc(j.cron_interval_minutes)} 分钟 · 天数 +${esc(j.window_start_days)} 至 +${esc(j.window_end_days)}<br>下单截止: 提前 ${esc(j.redeem_deadline_hours)} 小时 · 时间段: ${esc(j.time_slots.join(", "))}`
-                            : `${esc(j.target_date)} · ${esc(j.time_slots.join(", "))}<br>重试窗口: ${esc(j.retry_window_seconds)} 秒`
+                            : `${esc(j.target_date)} · ${esc(j.time_slots.join(", "))}<br>计划运行: ${esc(j.run_on_date ? `${j.run_on_date} 12:00` : "每天中午（旧任务）")} · 重试窗口: ${esc(j.retry_window_seconds)} 秒`
                         }<br>
                         场地: ${esc(j.preferred_fields.join(", ") || "任意")}
                     </div>
@@ -1290,6 +1412,7 @@ async function refreshStatus() {
 }
 
 renderTimeSlots();
+resetRunOnDateDefault(true);
 toggleJobMode();
 refreshStatus();
 setInterval(refreshStatus, 15000);
