@@ -1392,6 +1392,11 @@ def create_app(daemon: SportsReservationDaemon) -> Flask:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the sports reservation daemon.")
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Host to listen on (default: 127.0.0.1)",
+    )
     parser.add_argument("-p", "--port", type=int, default=5003, help="Port to listen on (default: 5003)")
     parser.add_argument(
         "--from-browser",
@@ -1404,10 +1409,11 @@ def main() -> None:
     daemon.start()
 
     app = create_app(daemon)
-    print(f"Starting Sports Reservation Daemon on port {args.port}")
-    print(f"Dashboard: http://localhost:{args.port}/")
+    dashboard_host = "localhost" if args.host in {"127.0.0.1", "0.0.0.0"} else args.host
+    print(f"Starting Sports Reservation Daemon on {args.host}:{args.port}")
+    print(f"Dashboard: http://{dashboard_host}:{args.port}/")
     print(f"Auth mode: {'browser' if args.from_browser else 'credentials'}")
-    app.run(debug=False, port=args.port, threaded=True)
+    app.run(debug=False, host=args.host, port=args.port, threaded=True)
 
 
 if __name__ == "__main__":

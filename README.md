@@ -120,6 +120,7 @@ sjtu-sports reserve <venue_id> --motion 乒乓球 --date 2026-03-29 --field 场�
 # Sports reservation daemon dashboard
 sjtu-sportsd
 sjtu-sportsd --from-browser               # Test the daemon against the current Playwright browser login
+sjtu-sportsd --host 0.0.0.0 -p 5003      # Expose the dashboard on all network interfaces
 ```
 
 The sports daemon supports two job modes:
@@ -138,6 +139,7 @@ sjtu-checkin -p 5002 --poll-url http://your-source/checkin-data
 
 # Sports reservation daemon
 sjtu-sportsd -p 5003
+sjtu-sportsd --host 0.0.0.0 -p 5003
 ```
 
 ## Project Structure
@@ -264,9 +266,11 @@ The daemon exposes a web dashboard where you can create reservation jobs, inspec
 ```bash
 sjtu-sportsd -p 5003
 # open http://localhost:5003/
+sjtu-sportsd --host 0.0.0.0 -p 5003
+# open http://<server-ip>:5003/ from another device on the same network
 ```
 
-By default the daemon uses `credentials.json` for long-running login refresh. `sjtu-sportsd --from-browser` is also supported for live testing while the managed Playwright browser is logged in.
+By default the daemon binds to `127.0.0.1` and uses `credentials.json` for long-running login refresh. Use `--host` if you want a different bind address, and `sjtu-sportsd --from-browser` for live testing while the managed Playwright browser is logged in.
 
 ## Environment
 
