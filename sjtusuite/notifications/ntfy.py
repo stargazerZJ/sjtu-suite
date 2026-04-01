@@ -3,9 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from email.header import Header
 from typing import Any
 
 import requests
+
+
+def _encode_header(value: str) -> str:
+    try:
+        value.encode("ascii")
+        return value
+    except UnicodeEncodeError:
+        return Header(value, "utf-8").encode()
 
 
 @dataclass(slots=True)
@@ -75,14 +84,14 @@ class NtfyNotifier:
 
         headers = {"Content-Type": "text/plain; charset=utf-8"}
         if title:
-            headers["Title"] = title
+            headers["Title"] = _encode_header(title)
         if merged_tags:
-            headers["Tags"] = ",".join(dict.fromkeys(merged_tags))
+            headers["Tags"] = _encode_header(",".join(dict.fromkeys(merged_tags)))
         chosen_priority = priority if priority is not None else self.default_priority
         if chosen_priority is not None:
             headers["Priority"] = str(chosen_priority)
         if click:
-            headers["Click"] = click
+            headers["Click"] = _encode_header(click)
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
 
