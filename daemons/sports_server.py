@@ -40,6 +40,10 @@ JOBS_FILE = get_data_dir() / "sports_reservation_jobs.json"
 LOG_FILE = get_data_dir() / "sports_reservation_daemon.log"
 JOB_TYPE_TARGET_DATE = "target_date"
 JOB_TYPE_CRON = "cron"
+NOON_WARMUP_HOUR = 11
+NOON_WARMUP_MINUTE = 59
+NOON_WARMUP_SECOND = 55
+PREPARED_CONTEXT_TTL_SECONDS = 120
 
 
 def _configure_logger() -> logging.Logger:
@@ -218,6 +222,13 @@ class PreparedTargetDateJob:
     date_option: DateOption | None = None
 
 
+@dataclass(slots=True)
+class PreparedRunContext:
+    client: SportsReservationClient
+    prepared_job: PreparedTargetDateJob
+    warmed_at_monotonic: float
+
+
 class SportsReservationDaemon:
     def __init__(
         self,
@@ -231,7 +242,20 @@ class SportsReservationDaemon:
         self.jobs_lock = threading.RLock()
         self.run_lock = threading.Lock()
         self.history = deque(maxlen=100)
+        self.prepared_contexts_lock = threading.Lock()
+        self.prepared_contexts: dict[str, PreparedRunContext] = {}
         self.scheduler = BackgroundScheduler(timezone=TIMEZONE)
+        self.scheduler.add_job(
+            self.run_warmup_jobs,
+            trigger=CronTrigger(
+                hour=NOON_WARMUP_HOUR,
+                minute=NOON_WARMUP_MINUTE,
+                second=NOON_WARMUP_SECOND,
+                timezone=TIMEZONE,
+            ),
+            id="sports-noon-warmup",
+            replace_existing=True,
+        )
         self.scheduler.add_job(
             self.run_scheduled_jobs,
             trigger=CronTrigger(hour=12, minute=0, timezone=TIMEZONE),
@@ -289,6 +313,41 @@ class SportsReservationDaemon:
             "selected_slots": preview.get("selected_slots"),
             "total_price": preview.get("total_price"),
         }
+
+    def _discard_stale_prepared_contexts(self) -> None:
+        now = time.monotonic()
+        stale_job_ids: list[str] = []
+        with self.prepared_contexts_lock:
+            for job_id, context in self.prepared_contexts.items():
+                if now - context.warmed_at_monotonic > PREPARED_CONTEXT_TTL_SECONDS:
+                    stale_job_ids.append(job_id)
+            for job_id in stale_job_ids:
+                self.prepared_contexts.pop(job_id, None)
+        for job_id in stale_job_ids:
+            self._log(logging.DEBUG, "Discarded stale prepared reservation context.", job_id=job_id)
+
+    def _store_prepared_context(
+        self,
+        job: ReservationJob,
+        *,
+        client: SportsReservationClient,
+        prepared_job: PreparedTargetDateJob,
+    ) -> None:
+        with self.prepared_contexts_lock:
+            self.prepared_contexts[job.job_id] = PreparedRunContext(
+                client=client,
+                prepared_job=prepared_job,
+                warmed_at_monotonic=time.monotonic(),
+            )
+        self._log(logging.DEBUG, "Stored prepared reservation context.", **self._job_fields(job))
+
+    def _take_prepared_context(self, job: ReservationJob) -> PreparedRunContext | None:
+        self._discard_stale_prepared_contexts()
+        with self.prepared_contexts_lock:
+            context = self.prepared_contexts.pop(job.job_id, None)
+        if context:
+            self._log(logging.DEBUG, "Reusing prepared reservation context.", **self._job_fields(job))
+        return context
 
     def start(self) -> None:
         self._log(logging.INFO, "Starting sports reservation scheduler.")
@@ -974,6 +1033,31 @@ class SportsReservationDaemon:
             enabled=job.enabled,
         )
 
+    def run_warmup_jobs(self) -> None:
+        today = _now().date()
+        self._discard_stale_prepared_contexts()
+        self._log(logging.INFO, "Running pre-noon warmup for target-date reservation jobs.", today=today.isoformat())
+        for job in self.list_jobs():
+            if not job.enabled or job.job_type != JOB_TYPE_TARGET_DATE:
+                continue
+            if not job.run_on_date:
+                continue
+            if _parse_date(job.run_on_date) != today:
+                continue
+            try:
+                self._log(logging.INFO, "Preparing target-date reservation job before noon.", **self._job_fields(job))
+                client = self.create_client()
+                prepared_job = self._prepare_target_date_job(client, job)
+                self._store_prepared_context(job, client=client, prepared_job=prepared_job)
+            except Exception as exc:  # pragma: no cover - defensive logging
+                self.logger.exception(
+                    _format_log_message(
+                        "Failed to warm up target-date reservation job.",
+                        **self._job_fields(job),
+                        error=str(exc),
+                    )
+                )
+
     def run_job(
         self,
         job_id: str,
@@ -1009,14 +1093,23 @@ class SportsReservationDaemon:
             if not dry_run and not job.enabled and triggered_by in {"schedule", JOB_TYPE_CRON}:
                 return {"ok": False, "message": "Job is disabled."}
 
-            client = self.create_client()
-            retry_window_seconds = job.retry_window_seconds if job.job_type == JOB_TYPE_TARGET_DATE else 0
-            deadline = time.time() + (retry_window_seconds if not dry_run else 0)
-            prepared_target_job = (
-                self._prepare_target_date_job(client, job)
-                if job.job_type == JOB_TYPE_TARGET_DATE
+            prepared_context = (
+                self._take_prepared_context(job)
+                if job.job_type == JOB_TYPE_TARGET_DATE and triggered_by == "schedule"
                 else None
             )
+            if prepared_context:
+                client = prepared_context.client
+                prepared_target_job = prepared_context.prepared_job
+            else:
+                client = self.create_client()
+                prepared_target_job = (
+                    self._prepare_target_date_job(client, job)
+                    if job.job_type == JOB_TYPE_TARGET_DATE
+                    else None
+                )
+            retry_window_seconds = job.retry_window_seconds if job.job_type == JOB_TYPE_TARGET_DATE else 0
+            deadline = time.time() + (retry_window_seconds if not dry_run else 0)
             attempt_count = 0
             while True:
                 attempt_count += 1
