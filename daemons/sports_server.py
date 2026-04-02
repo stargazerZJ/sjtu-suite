@@ -42,7 +42,43 @@ JOB_TYPE_TARGET_DATE = "target_date"
 JOB_TYPE_CRON = "cron"
 
 
-logging.basicConfig(filename=str(LOG_FILE), level=logging.INFO)
+def _configure_logger() -> logging.Logger:
+    logger = logging.getLogger("sports_server")
+    if logger.handlers:
+        return logger
+    logger.setLevel(logging.DEBUG)
+    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    )
+    logger.addHandler(handler)
+    logger.propagate = False
+    return logger
+
+
+LOGGER = _configure_logger()
+
+
+def _format_log_value(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat(timespec="seconds")
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, (dict, list, tuple, set)):
+        return json.dumps(value, ensure_ascii=False, default=str)
+    return str(value)
+
+
+def _format_log_message(message: str, **fields: Any) -> str:
+    if not fields:
+        return message
+    serialized = ", ".join(f"{key}={_format_log_value(value)}" for key, value in fields.items())
+    return f"{message} | {serialized}"
 
 
 def _now() -> datetime:
@@ -189,6 +225,7 @@ class SportsReservationDaemon:
         use_browser_session: bool = False,
         jobs_file: Path = JOBS_FILE,
     ):
+        self.logger = LOGGER
         self.use_browser_session = use_browser_session
         self.jobs_file = jobs_file
         self.jobs_lock = threading.RLock()
@@ -204,33 +241,92 @@ class SportsReservationDaemon:
         self.jobs: dict[str, ReservationJob] = self._load_jobs()
         self.notifier = NtfyNotifier.from_config(credentials.ntfy_config)
         self._sync_cron_jobs()
+        self._log(
+            logging.INFO,
+            "Sports reservation daemon initialized.",
+            auth_mode="browser" if self.use_browser_session else "credentials",
+            jobs_file=self.jobs_file,
+            job_count=len(self.jobs),
+            log_file=LOG_FILE,
+        )
+
+    def _log(self, level: int, message: str, **fields: Any) -> None:
+        self.logger.log(level, _format_log_message(message, **fields))
+
+    @staticmethod
+    def _job_fields(job: ReservationJob) -> dict[str, Any]:
+        return {
+            "job_id": job.job_id,
+            "job_name": job.name,
+            "job_type": job.job_type,
+            "venue_id": job.venue_id,
+            "venue_name": job.venue_name,
+            "motion": job.motion,
+            "target_date": job.target_date,
+            "run_on_date": job.run_on_date,
+            "time_slots": job.time_slots,
+            "preferred_fields": job.preferred_fields,
+        }
+
+    @staticmethod
+    def _slots_for_log(slots: list[FieldSlot]) -> list[dict[str, Any]]:
+        return [
+            {
+                "field": slot.field_name,
+                "time": slot.time_slot,
+                "price": slot.price,
+                "status": slot.status,
+                "count": slot.count,
+                "sign": slot.sign,
+            }
+            for slot in slots
+        ]
+
+    @staticmethod
+    def _preview_for_log(preview: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "date_option": preview.get("date_option"),
+            "selected_slots": preview.get("selected_slots"),
+            "total_price": preview.get("total_price"),
+        }
 
     def start(self) -> None:
+        self._log(logging.INFO, "Starting sports reservation scheduler.")
         self.scheduler.start()
 
     def shutdown(self) -> None:
         if self.scheduler.running:
+            self._log(logging.INFO, "Shutting down sports reservation scheduler.")
             self.scheduler.shutdown(wait=False)
 
     def create_client(self) -> SportsReservationClient:
+        self._log(
+            logging.DEBUG,
+            "Creating sports reservation client.",
+            auth_mode="browser" if self.use_browser_session else "credentials",
+        )
         jac_login = JACLogin(credentials.username or "", credentials.password or "")
         client = SportsReservationClient(jac_login)
         if self.use_browser_session:
             client.load_playwright_browser_session()
+            self._log(logging.DEBUG, "Sports reservation client ready using browser session.")
             return client
         if not credentials.username or not credentials.password:
             raise SportsAPIError(
                 "Daemon mode needs credentials.json or env credentials unless it is started with --from-browser."
             )
         client.login()
+        self._log(logging.DEBUG, "Sports reservation client login completed with credentials.")
         return client
 
     def _load_jobs(self) -> dict[str, ReservationJob]:
         if not self.jobs_file.exists():
+            self._log(logging.DEBUG, "Jobs file does not exist yet.", jobs_file=self.jobs_file)
             return {}
         with self.jobs_file.open("r", encoding="utf-8") as handle:
             payload = json.load(handle)
         jobs = payload.get("jobs", [])
+        self._log(logging.DEBUG, "Loaded sports reservation jobs from disk.", jobs_file=self.jobs_file, job_count=len(jobs))
         return {item["job_id"]: ReservationJob.from_dict(item) for item in jobs}
 
     def _save_jobs(self) -> None:
@@ -241,6 +337,7 @@ class SportsReservationDaemon:
         }
         with self.jobs_file.open("w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2)
+        self._log(logging.DEBUG, "Persisted sports reservation jobs to disk.", jobs_file=self.jobs_file, job_count=len(payload["jobs"]))
 
     def list_jobs(self) -> list[ReservationJob]:
         with self.jobs_lock:
@@ -316,6 +413,7 @@ class SportsReservationDaemon:
             return job
 
     def create_job(self, payload: dict[str, Any]) -> ReservationJob:
+        self._log(logging.DEBUG, "Creating reservation job from payload.", payload=payload)
         time_slots = _normalize_time_slots(payload.get("time_slots", []))
         if not time_slots:
             raise ValueError("Choose at least one time slot.")
@@ -370,10 +468,12 @@ class SportsReservationDaemon:
         created_message = "Reservation job created."
         if job.job_type == JOB_TYPE_TARGET_DATE and job.run_on_date:
             created_message = f"Reservation job created for noon on {job.run_on_date}."
+        self._log(logging.INFO, "Reservation job created.", **self._job_fields(job))
         self.record_history(job, "created", True, created_message)
         return job
 
     def update_job(self, job_id: str, payload: dict[str, Any]) -> ReservationJob:
+        self._log(logging.DEBUG, "Updating reservation job.", job_id=job_id, payload=payload)
         with self.jobs_lock:
             if job_id not in self.jobs:
                 raise KeyError(job_id)
@@ -440,6 +540,7 @@ class SportsReservationDaemon:
             job.updated_at = _now_iso()
             self._save_jobs()
             self._sync_cron_jobs()
+            self._log(logging.INFO, "Reservation job updated.", **self._job_fields(job))
             return job
 
     def delete_job(self, job_id: str) -> None:
@@ -449,6 +550,7 @@ class SportsReservationDaemon:
                 raise KeyError(job_id)
             self._save_jobs()
             self._sync_cron_jobs()
+        self._log(logging.INFO, "Reservation job deleted.", **self._job_fields(job))
         self.record_history(job, "deleted", True, "Reservation job deleted.")
 
     def record_history(
@@ -460,6 +562,15 @@ class SportsReservationDaemon:
         *,
         details: dict[str, Any] | None = None,
     ) -> None:
+        self._log(
+            logging.DEBUG,
+            "Recording reservation history event.",
+            **self._job_fields(job),
+            action=action,
+            success=success,
+            history_message=message,
+            details=details or {},
+        )
         self.history.appendleft(
             {
                 "timestamp": _now_iso(),
@@ -486,13 +597,17 @@ class SportsReservationDaemon:
         }
 
     def list_venues(self, search: str = "") -> list[dict[str, Any]]:
+        self._log(logging.DEBUG, "Listing venues for dashboard search.", search=search)
         client = self.create_client()
         venues, _ = client.list_all_venues(venue_name=search)
+        self._log(logging.DEBUG, "Venue search completed.", search=search, venue_count=len(venues))
         return [venue.raw for venue in venues]
 
     def get_venue_detail(self, venue_id: str) -> dict[str, Any]:
+        self._log(logging.DEBUG, "Fetching venue detail.", venue_id=venue_id)
         client = self.create_client()
         detail = client.get_venue_detail(venue_id)
+        self._log(logging.DEBUG, "Venue detail fetched.", venue_id=venue_id, motion_type_count=len(detail.motion_types))
         return {
             "venue_id": detail.venue_id,
             "venue_name": detail.venue_name,
@@ -503,6 +618,7 @@ class SportsReservationDaemon:
         }
 
     def get_availability(self, venue_id: str, motion: str) -> list[dict[str, Any]]:
+        self._log(logging.DEBUG, "Fetching venue availability.", venue_id=venue_id, motion=motion)
         client = self.create_client()
         motion_type = client.resolve_motion_type(venue_id, motion)
         options = client.list_date_options(venue_id, motion_type.id)
@@ -531,6 +647,7 @@ class SportsReservationDaemon:
                     ],
                 }
             )
+        self._log(logging.DEBUG, "Venue availability fetched.", venue_id=venue_id, motion=motion, visible_dates=len(results))
         return results
 
     def _choose_slots(
@@ -540,6 +657,14 @@ class SportsReservationDaemon:
         time_slots: list[str],
         preferred_fields: list[str],
     ) -> tuple[list[FieldSlot], list[str]]:
+        self._log(
+            logging.DEBUG,
+            "Choosing slots from current availability.",
+            time_slots=time_slots,
+            preferred_fields=preferred_fields,
+            candidate_slot_count=len(slots),
+            candidate_slots=self._slots_for_log(slots),
+        )
         selected: list[FieldSlot] = []
         missing: list[str] = []
         preferred_order = {field: index for index, field in enumerate(preferred_fields)}
@@ -557,6 +682,12 @@ class SportsReservationDaemon:
                 missing.append(time_slot)
                 continue
             selected.append(candidates[0])
+        self._log(
+            logging.DEBUG,
+            "Slot choice completed.",
+            selected_slots=self._slots_for_log(selected),
+            missing_time_slots=missing,
+        )
         return selected, missing
 
     def _prepare_target_date_job(
@@ -564,9 +695,17 @@ class SportsReservationDaemon:
         client: SportsReservationClient,
         job: ReservationJob,
     ) -> PreparedTargetDateJob:
-        return PreparedTargetDateJob(
-            motion_type=client.resolve_motion_type(job.venue_id, job.motion),
+        self._log(logging.DEBUG, "Preparing target-date booking context.", **self._job_fields(job))
+        motion_type = client.resolve_motion_type(job.venue_id, job.motion)
+        self._log(
+            logging.DEBUG,
+            "Resolved motion type for target-date booking.",
+            **self._job_fields(job),
+            motion_type_id=motion_type.id,
+            motion_type_name=motion_type.name,
+            tension=motion_type.tension,
         )
+        return PreparedTargetDateJob(motion_type=motion_type)
 
     def build_job_preview(
         self,
@@ -578,23 +717,58 @@ class SportsReservationDaemon:
         if job.job_type == JOB_TYPE_CRON:
             return self._build_cron_preview(client, job)
 
+        self._log(logging.DEBUG, "Building target-date booking preview.", **self._job_fields(job))
         prepared = prepared or self._prepare_target_date_job(client, job)
         motion_type = prepared.motion_type
         date_option = prepared.date_option
         if not date_option or date_option.date != job.target_date:
+            self._log(
+                logging.DEBUG,
+                "Fetching visible date options for target-date booking.",
+                **self._job_fields(job),
+                motion_type_id=motion_type.id,
+            )
             date_options = client.list_date_options(job.venue_id, motion_type.id)
             date_map = {item.date: item for item in date_options}
+            self._log(
+                logging.DEBUG,
+                "Fetched visible date options for target-date booking.",
+                **self._job_fields(job),
+                visible_dates=[item.date for item in date_options],
+            )
             if job.target_date not in date_map:
                 raise SportsAPIError(
                     f"{job.target_date} is not in the current reservation window yet."
                 )
             date_option = date_map[job.target_date]
             prepared.date_option = date_option
+            self._log(
+                logging.DEBUG,
+                "Resolved date option for target-date booking.",
+                **self._job_fields(job),
+                date_id=date_option.date_id,
+                view_str=date_option.view_str,
+            )
+        self._log(
+            logging.DEBUG,
+            "Fetching live slots for target-date booking.",
+            **self._job_fields(job),
+            motion_type_id=motion_type.id,
+            date_id=date_option.date_id,
+        )
         live_slots = client.list_available_slots(
             job.venue_id,
             motion_type.id,
             date=job.target_date,
             date_id=date_option.date_id,
+        )
+        self._log(
+            logging.DEBUG,
+            "Fetched live slots for target-date booking.",
+            **self._job_fields(job),
+            date_id=date_option.date_id,
+            live_slot_count=len(live_slots),
+            live_slots=self._slots_for_log(live_slots),
         )
         selected_slots, missing = self._choose_slots(
             slots=live_slots,
@@ -612,13 +786,15 @@ class SportsReservationDaemon:
             selected_spaces=selected_spaces,
         )
         total_price = sum(float(space["venuePrice"]) for space in selected_spaces)
-        return {
+        preview = {
             "motion_type": asdict(motion_type),
             "date_option": asdict(date_option),
             "selected_slots": [asdict(slot) for slot in selected_slots],
             "confirm_order_payload": payload,
             "total_price": f"{total_price:.2f}",
         }
+        self._log(logging.DEBUG, "Built target-date booking preview.", **self._job_fields(job), preview=self._preview_for_log(preview))
+        return preview
 
     @staticmethod
     def _slot_start_at(date_str: str, time_slot: str) -> datetime:
@@ -626,7 +802,15 @@ class SportsReservationDaemon:
         return datetime.strptime(f"{date_str} {start_text}", "%Y-%m-%d %H:%M")
 
     def _build_cron_preview(self, client: SportsReservationClient, job: ReservationJob) -> dict[str, Any]:
+        self._log(logging.DEBUG, "Building cron booking preview.", **self._job_fields(job))
         motion_type = client.resolve_motion_type(job.venue_id, job.motion)
+        self._log(
+            logging.DEBUG,
+            "Resolved motion type for cron booking.",
+            **self._job_fields(job),
+            motion_type_id=motion_type.id,
+            motion_type_name=motion_type.name,
+        )
         date_options = client.list_date_options(job.venue_id, motion_type.id)
         today = _now().date()
         window_start = today + timedelta(days=job.window_start_days)
@@ -635,17 +819,49 @@ class SportsReservationDaemon:
         now = _now()
         saw_date_in_window = False
         cutoff_filtered = False
+        self._log(
+            logging.DEBUG,
+            "Fetched visible date options for cron booking.",
+            **self._job_fields(job),
+            visible_dates=[item.date for item in date_options],
+            window_start=window_start.isoformat(),
+            window_end=window_end.isoformat(),
+        )
 
         for date_option in date_options:
             date_value = _parse_date(date_option.date)
             if date_value < window_start or date_value > window_end:
+                self._log(
+                    logging.DEBUG,
+                    "Skipping visible date outside cron window.",
+                    **self._job_fields(job),
+                    visible_date=date_option.date,
+                    window_start=window_start.isoformat(),
+                    window_end=window_end.isoformat(),
+                )
                 continue
             saw_date_in_window = True
+            self._log(
+                logging.DEBUG,
+                "Fetching live slots for cron booking date.",
+                **self._job_fields(job),
+                visible_date=date_option.date,
+                date_id=date_option.date_id,
+            )
             live_slots = client.list_available_slots(
                 job.venue_id,
                 motion_type.id,
                 date=date_option.date,
                 date_id=date_option.date_id,
+            )
+            self._log(
+                logging.DEBUG,
+                "Fetched live slots for cron booking date.",
+                **self._job_fields(job),
+                visible_date=date_option.date,
+                date_id=date_option.date_id,
+                live_slot_count=len(live_slots),
+                live_slots=self._slots_for_log(live_slots),
             )
             filtered_slots: list[FieldSlot] = []
             for slot in live_slots:
@@ -654,8 +870,24 @@ class SportsReservationDaemon:
                 slot_start = self._slot_start_at(date_option.date, slot.time_slot)
                 if slot_start - now < timedelta(hours=job.redeem_deadline_hours):
                     cutoff_filtered = True
+                    self._log(
+                        logging.DEBUG,
+                        "Skipping slot past redeem deadline.",
+                        **self._job_fields(job),
+                        visible_date=date_option.date,
+                        slot={"field": slot.field_name, "time": slot.time_slot},
+                        slot_start=slot_start,
+                    )
                     continue
                 filtered_slots.append(slot)
+            self._log(
+                logging.DEBUG,
+                "Filtered cron live slots for requested times.",
+                **self._job_fields(job),
+                visible_date=date_option.date,
+                filtered_slot_count=len(filtered_slots),
+                filtered_slots=self._slots_for_log(filtered_slots),
+            )
 
             selected_slots, missing = self._choose_slots(
                 slots=filtered_slots,
@@ -663,6 +895,13 @@ class SportsReservationDaemon:
                 preferred_fields=job.preferred_fields,
             )
             if missing:
+                self._log(
+                    logging.DEBUG,
+                    "Cron booking date missing requested slots.",
+                    **self._job_fields(job),
+                    visible_date=date_option.date,
+                    missing_time_slots=missing,
+                )
                 continue
 
             selected_spaces = client.build_selected_spaces(selected_slots)
@@ -673,13 +912,15 @@ class SportsReservationDaemon:
                 selected_spaces=selected_spaces,
             )
             total_price = sum(float(space["venuePrice"]) for space in selected_spaces)
-            return {
+            preview = {
                 "motion_type": asdict(motion_type),
                 "date_option": asdict(date_option),
                 "selected_slots": [asdict(slot) for slot in selected_slots],
                 "confirm_order_payload": payload,
                 "total_price": f"{total_price:.2f}",
             }
+            self._log(logging.DEBUG, "Built cron booking preview.", **self._job_fields(job), preview=self._preview_for_log(preview))
+            return preview
 
         if not saw_date_in_window:
             raise SportsAPIError(
@@ -720,6 +961,18 @@ class SportsReservationDaemon:
                     job.enabled = False
             self._save_jobs()
             self._sync_cron_jobs()
+        self._log(
+            logging.DEBUG,
+            "Updated reservation job state.",
+            **self._job_fields(job),
+            status=status,
+            state_message=message,
+            checked_at=job.last_checked_at,
+            order_id=order_id,
+            payment_url=job.last_payment_url,
+            success=success,
+            enabled=job.enabled,
+        )
 
     def run_job(
         self,
@@ -730,6 +983,13 @@ class SportsReservationDaemon:
     ) -> dict[str, Any]:
         with self.run_lock:
             job = self.get_job(job_id)
+            self._log(
+                logging.INFO,
+                "Starting reservation job run.",
+                **self._job_fields(job),
+                dry_run=dry_run,
+                triggered_by=triggered_by,
+            )
             today = _now().date()
             if job.job_type == JOB_TYPE_TARGET_DATE:
                 target_date = _parse_date(job.target_date)
@@ -760,6 +1020,18 @@ class SportsReservationDaemon:
             attempt_count = 0
             while True:
                 attempt_count += 1
+                remaining_retry_window = max(0.0, deadline - time.time()) if not dry_run else 0.0
+                self._log(
+                    logging.DEBUG,
+                    "Starting reservation attempt.",
+                    **self._job_fields(job),
+                    attempt=attempt_count,
+                    dry_run=dry_run,
+                    triggered_by=triggered_by,
+                    retry_window_seconds=retry_window_seconds,
+                    retry_interval_seconds=job.retry_interval_seconds,
+                    retry_window_remaining=f"{remaining_retry_window:.3f}",
+                )
                 try:
                     preview = self.build_job_preview(
                         client,
@@ -773,9 +1045,25 @@ class SportsReservationDaemon:
                         and triggered_by in {"schedule", "manual"}
                         and time.time() + job.retry_interval_seconds <= deadline
                     )
+                    self._log(
+                        logging.WARNING,
+                        "Preview build failed for reservation attempt.",
+                        **self._job_fields(job),
+                        attempt=attempt_count,
+                        error=message,
+                        should_retry=should_retry,
+                        retry_sleep_seconds=job.retry_interval_seconds if should_retry else 0,
+                    )
                     status = "waiting_window" if "window" in message else "no_slots"
                     self._mark_job(job, status=status, message=message)
                     if should_retry:
+                        self._log(
+                            logging.DEBUG,
+                            "Sleeping before retry after preview failure.",
+                            **self._job_fields(job),
+                            attempt=attempt_count,
+                            sleep_seconds=job.retry_interval_seconds,
+                        )
                         time.sleep(job.retry_interval_seconds)
                         continue
                     self.record_history(job, triggered_by, False, message, details={"attempts": attempt_count})
@@ -783,14 +1071,50 @@ class SportsReservationDaemon:
 
                 if dry_run:
                     message = "Preview built successfully."
+                    self._log(
+                        logging.INFO,
+                        "Dry-run preview completed successfully.",
+                        **self._job_fields(job),
+                        attempt=attempt_count,
+                        preview=self._preview_for_log(preview),
+                    )
                     self._mark_job(job, status="preview_ready", message=message)
                     self.record_history(job, triggered_by, True, message, details={"attempts": attempt_count})
                     return {"ok": True, "message": message, "preview": preview, "attempts": attempt_count}
 
+                self._log(
+                    logging.DEBUG,
+                    "Submitting confirm order request.",
+                    **self._job_fields(job),
+                    attempt=attempt_count,
+                    preview=self._preview_for_log(preview),
+                )
                 response = client.confirm_personal_order(preview["confirm_order_payload"])
+                self._log(
+                    logging.DEBUG,
+                    "Received confirm order response.",
+                    **self._job_fields(job),
+                    attempt=attempt_count,
+                    response=response,
+                )
                 if response.get("code") == 0:
                     order_id = str(response["data"])
+                    self._log(
+                        logging.INFO,
+                        "Reservation order created; requesting payment initialization.",
+                        **self._job_fields(job),
+                        attempt=attempt_count,
+                        order_id=order_id,
+                    )
                     payment = client.create_payment(order_id)
+                    self._log(
+                        logging.DEBUG,
+                        "Received payment initialization response.",
+                        **self._job_fields(job),
+                        attempt=attempt_count,
+                        order_id=order_id,
+                        payment=payment,
+                    )
                     message = f"Reservation order created successfully: {order_id}"
                     self._mark_job(
                         job,
@@ -825,13 +1149,37 @@ class SportsReservationDaemon:
 
                 message = response.get("msg", "Unknown reservation error")
                 if response.get("code") == 1002:
+                    self._log(
+                        logging.WARNING,
+                        "Reservation attempt requires captcha verification.",
+                        **self._job_fields(job),
+                        attempt=attempt_count,
+                        response=response,
+                    )
                     self._mark_job(job, status="captcha_required", message=message)
                     self.record_history(job, triggered_by, False, message, details=response)
                     return {"ok": False, "message": message, "response": response}
 
                 should_retry = time.time() + job.retry_interval_seconds <= deadline
+                self._log(
+                    logging.WARNING,
+                    "Reservation submit failed.",
+                    **self._job_fields(job),
+                    attempt=attempt_count,
+                    error=message,
+                    response=response,
+                    should_retry=should_retry,
+                    retry_sleep_seconds=job.retry_interval_seconds if should_retry else 0,
+                )
                 self._mark_job(job, status="submit_failed", message=message)
                 if should_retry:
+                    self._log(
+                        logging.DEBUG,
+                        "Sleeping before retry after submit failure.",
+                        **self._job_fields(job),
+                        attempt=attempt_count,
+                        sleep_seconds=job.retry_interval_seconds,
+                    )
                     time.sleep(job.retry_interval_seconds)
                     continue
                 self.record_history(job, triggered_by, False, message, details=response)
@@ -846,6 +1194,7 @@ class SportsReservationDaemon:
         preview: dict[str, Any],
     ) -> dict[str, Any]:
         if not self.notifier:
+            self._log(logging.DEBUG, "Skipping notification because ntfy is not configured.", **self._job_fields(job))
             return {"configured": False, "sent": False}
 
         selected_slots = preview.get("selected_slots", [])
@@ -868,6 +1217,13 @@ class SportsReservationDaemon:
             message_lines.append(f"Payment URL: {payment_url}")
 
         try:
+            self._log(
+                logging.DEBUG,
+                "Sending ntfy notification for successful reservation.",
+                **self._job_fields(job),
+                order_id=order_id,
+                payment_url=payment_url,
+            )
             result = self.notifier.send(
                 "\n".join(message_lines),
                 title=f"SJTU sports booked: {job.venue_name}",
@@ -875,13 +1231,22 @@ class SportsReservationDaemon:
                 click=payment_url,
             )
         except Exception as exc:  # pragma: no cover - network failure path
-            logging.getLogger("sports_server").warning("Failed to send ntfy notification: %s", exc)
+            self._log(logging.WARNING, "Failed to send ntfy notification.", **self._job_fields(job), order_id=order_id, error=str(exc))
             self.record_history(job, "notification", False, f"ntfy notification failed: {exc}")
             return {"configured": True, "sent": False, "error": str(exc)}
 
         details = {"topic": result.topic, "status_code": result.status_code}
         if result.message_id:
             details["message_id"] = result.message_id
+        self._log(
+            logging.INFO,
+            "ntfy notification sent.",
+            **self._job_fields(job),
+            order_id=order_id,
+            topic=result.topic,
+            status_code=result.status_code,
+            message_id=result.message_id,
+        )
         self.record_history(job, "notification", True, "ntfy notification sent.", details=details)
         return {
             "configured": True,
@@ -893,23 +1258,27 @@ class SportsReservationDaemon:
 
     def run_scheduled_jobs(self) -> None:
         today = _now().date()
+        self._log(logging.INFO, "Running scheduled noon reservation scan.", today=today.isoformat())
         for job in self.list_jobs():
             if not job.enabled or job.job_type != JOB_TYPE_TARGET_DATE:
                 continue
             if job.run_on_date:
                 scheduled_date = _parse_date(job.run_on_date)
                 if scheduled_date > today:
+                    self._log(logging.DEBUG, "Skipping target-date job because scheduled noon is still in the future.", **self._job_fields(job))
                     continue
                 if scheduled_date < today:
                     if job.last_status in {"idle", "waiting_schedule"}:
                         message = f"Scheduled noon on {job.run_on_date} has already passed."
                         self._mark_job(job, status="missed_schedule", message=message)
                         self.record_history(job, "schedule", False, message)
+                        self._log(logging.WARNING, "Scheduled noon already passed for target-date job.", **self._job_fields(job))
                     continue
             try:
+                self._log(logging.INFO, "Dispatching scheduled target-date reservation job.", **self._job_fields(job))
                 self.run_job(job.job_id, dry_run=False, triggered_by="schedule")
             except Exception as exc:  # pragma: no cover - defensive logging
-                logging.getLogger("sports_server").exception("Scheduled sports job failed: %s", exc)
+                self.logger.exception(_format_log_message("Scheduled sports job failed.", **self._job_fields(job), error=str(exc)))
 
 
 def create_dashboard_html() -> str:
@@ -1501,12 +1870,13 @@ def create_app(daemon: SportsReservationDaemon) -> Flask:
 
     @app.after_request
     def log_request(response):
-        app.logger.info(
-            "%s %s %s from %s",
-            request.method,
-            request.path,
-            response.status_code,
-            get_client_ip(),
+        daemon._log(
+            logging.DEBUG,
+            "Handled HTTP request.",
+            method=request.method,
+            path=request.path,
+            status_code=response.status_code,
+            client_ip=get_client_ip(),
         )
         return response
 
