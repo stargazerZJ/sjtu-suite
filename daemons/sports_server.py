@@ -913,90 +913,136 @@ class SportsReservationDaemon:
 
                 self._log(
                     logging.DEBUG,
-                    "Submitting confirm order request.",
+                    "Submitting confirm order request batch.",
                     **self._job_fields(job),
                     attempt=attempt_count,
                     preview=self._preview_for_log(preview),
+                    fallback_candidate_count=len(preview.get("fallback_candidates") or []),
                 )
-                response = client.confirm_personal_order(preview["confirm_order_payload"])
-                self._log(
-                    logging.DEBUG,
-                    "Received confirm order response.",
-                    **self._job_fields(job),
-                    attempt=attempt_count,
-                    response=response,
-                )
-                if response.get("code") == 0:
-                    order_id = str(response["data"])
-                    self._log(
-                        logging.INFO,
-                        "Reservation order created; requesting payment initialization.",
-                        **self._job_fields(job),
-                        attempt=attempt_count,
-                        order_id=order_id,
-                    )
-                    payment = client.create_payment(order_id)
+                fallback_candidates = preview.get("fallback_candidates") or []
+                submit_candidates = fallback_candidates or [
+                    {
+                        "selected_slots": preview["selected_slots"],
+                        "selected_spaces": preview.get("selected_spaces", []),
+                        "confirm_order_payload": preview["confirm_order_payload"],
+                        "total_price": preview["total_price"],
+                    }
+                ]
+                last_response: dict[str, Any] | None = None
+                last_message = "Unknown reservation error"
+                for candidate_index, candidate in enumerate(submit_candidates, start=1):
                     self._log(
                         logging.DEBUG,
-                        "Received payment initialization response.",
+                        "Submitting confirm order request.",
                         **self._job_fields(job),
                         attempt=attempt_count,
-                        order_id=order_id,
-                        payment=payment,
+                        candidate_index=candidate_index,
+                        candidate_count=len(submit_candidates),
+                        selected_slots=candidate.get("selected_slots", []),
                     )
-                    message = f"Reservation order created successfully: {order_id}"
-                    self._mark_job(
-                        job,
-                        status="success",
-                        message=message,
-                        order_id=order_id,
-                        payment=payment,
-                        success=True,
-                    )
-                    self.record_history(
-                        job,
-                        triggered_by,
-                        True,
-                        message,
-                        details={"attempts": attempt_count, "order_id": order_id},
-                    )
-                    notification = self._send_booking_notification(
-                        job,
-                        order_id=order_id,
-                        payment=payment,
-                        preview=preview,
-                    )
-                    return {
-                        "ok": True,
-                        "message": message,
-                        "order_id": order_id,
-                        "payment": payment,
-                        "notification": notification,
-                        "preview": preview,
-                        "attempts": attempt_count,
-                    }
-
-                message = response.get("msg", "Unknown reservation error")
-                if response.get("code") == 1002:
+                    response = client.confirm_personal_order(candidate["confirm_order_payload"])
+                    last_response = response
                     self._log(
-                        logging.WARNING,
-                        "Reservation attempt requires captcha verification.",
+                        logging.DEBUG,
+                        "Received confirm order response.",
                         **self._job_fields(job),
                         attempt=attempt_count,
+                        candidate_index=candidate_index,
+                        candidate_count=len(submit_candidates),
                         response=response,
                     )
-                    self._mark_job(job, status="captcha_required", message=message)
-                    self.record_history(job, triggered_by, False, message, details=response)
-                    return {"ok": False, "message": message, "response": response}
+                    if response.get("code") == 0:
+                        successful_preview = dict(preview)
+                        successful_preview["selected_slots"] = candidate.get("selected_slots", [])
+                        successful_preview["selected_spaces"] = candidate.get("selected_spaces", [])
+                        successful_preview["confirm_order_payload"] = candidate["confirm_order_payload"]
+                        successful_preview["total_price"] = candidate.get("total_price", preview.get("total_price"))
+                        order_id = str(response["data"])
+                        self._log(
+                            logging.INFO,
+                            "Reservation order created; requesting payment initialization.",
+                            **self._job_fields(job),
+                            attempt=attempt_count,
+                            candidate_index=candidate_index,
+                            order_id=order_id,
+                        )
+                        payment = client.create_payment(order_id)
+                        self._log(
+                            logging.DEBUG,
+                            "Received payment initialization response.",
+                            **self._job_fields(job),
+                            attempt=attempt_count,
+                            candidate_index=candidate_index,
+                            order_id=order_id,
+                            payment=payment,
+                        )
+                        message = f"Reservation order created successfully: {order_id}"
+                        self._mark_job(
+                            job,
+                            status="success",
+                            message=message,
+                            order_id=order_id,
+                            payment=payment,
+                            success=True,
+                        )
+                        self.record_history(
+                            job,
+                            triggered_by,
+                            True,
+                            message,
+                            details={"attempts": attempt_count, "order_id": order_id},
+                        )
+                        notification = self._send_booking_notification(
+                            job,
+                            order_id=order_id,
+                            payment=payment,
+                            preview=successful_preview,
+                        )
+                        return {
+                            "ok": True,
+                            "message": message,
+                            "order_id": order_id,
+                            "payment": payment,
+                            "notification": notification,
+                            "preview": successful_preview,
+                            "attempts": attempt_count,
+                        }
 
+                    last_message = response.get("msg", "Unknown reservation error")
+                    if response.get("code") == 1002:
+                        self._log(
+                            logging.WARNING,
+                            "Reservation attempt requires captcha verification.",
+                            **self._job_fields(job),
+                            attempt=attempt_count,
+                            candidate_index=candidate_index,
+                            response=response,
+                        )
+                        self._mark_job(job, status="captcha_required", message=last_message)
+                        self.record_history(job, triggered_by, False, last_message, details=response)
+                        return {"ok": False, "message": last_message, "response": response}
+
+                    if candidate_index < len(submit_candidates):
+                        self._log(
+                            logging.DEBUG,
+                            "Fallback candidate failed; trying next candidate from the same slot snapshot.",
+                            **self._job_fields(job),
+                            attempt=attempt_count,
+                            candidate_index=candidate_index,
+                            error=last_message,
+                        )
+
+                message = last_message
+                response = last_response or {}
                 should_retry = time.time() + job.retry_interval_seconds <= deadline
                 self._log(
                     logging.WARNING,
-                    "Reservation submit failed.",
+                    "Reservation submit batch failed.",
                     **self._job_fields(job),
                     attempt=attempt_count,
                     error=message,
                     response=response,
+                    candidate_count=len(submit_candidates),
                     should_retry=should_retry,
                     retry_sleep_seconds=job.retry_interval_seconds if should_retry else 0,
                 )

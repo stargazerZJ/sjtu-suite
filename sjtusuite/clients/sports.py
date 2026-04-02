@@ -32,6 +32,7 @@ SPORTS_TIME_SLOTS = [f"{hour:02d}:00-{hour + 1:02d}:00" for hour in range(7, 22)
 UNAVAILABLE_STATUSES = {-3, -2, -1}
 SLOT_SELECTION_MODE_ALL_REQUIRED = "all_required"
 SLOT_SELECTION_MODE_FIRST_AVAILABLE = "first_available"
+SPORTS_REQUEST_TIMEOUT_SECONDS = 1.0
 
 
 class SportsAPIError(RuntimeError):
@@ -110,6 +111,22 @@ class PreparedTargetDateReservation:
 
 
 @dataclass(slots=True, frozen=True)
+class ReservationAttemptCandidate:
+    selected_slots: tuple[FieldSlot, ...]
+    selected_spaces: tuple[dict[str, Any], ...]
+    confirm_order_payload: dict[str, Any]
+    total_price: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "selected_slots": [asdict(slot) for slot in self.selected_slots],
+            "selected_spaces": list(self.selected_spaces),
+            "confirm_order_payload": self.confirm_order_payload,
+            "total_price": self.total_price,
+        }
+
+
+@dataclass(slots=True, frozen=True)
 class ReservationPreview:
     motion_type: MotionType
     date_option: DateOption
@@ -117,6 +134,7 @@ class ReservationPreview:
     selected_spaces: tuple[dict[str, Any], ...]
     confirm_order_payload: dict[str, Any]
     total_price: str
+    fallback_candidates: tuple[ReservationAttemptCandidate, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -126,6 +144,7 @@ class ReservationPreview:
             "selected_spaces": list(self.selected_spaces),
             "confirm_order_payload": self.confirm_order_payload,
             "total_price": self.total_price,
+            "fallback_candidates": [candidate.to_dict() for candidate in self.fallback_candidates],
         }
 
 
@@ -307,7 +326,7 @@ class SportsReservationClient(OAuthClientBase):
             f"&redirect_uri={quote(self.redirect_url, safe=':/')}"
         )
         final_redirect_url = self.jac_login.login(auth_url)
-        self.session.get(final_redirect_url, allow_redirects=True)
+        self.session.get(final_redirect_url, allow_redirects=True, timeout=SPORTS_REQUEST_TIMEOUT_SECONDS)
         if not self.validate_session():
             raise SportsAPIError("Sports login failed.")
         self.save_session()
@@ -331,10 +350,12 @@ class SportsReservationClient(OAuthClientBase):
                 **kwargs,
             )
         url = path if path.startswith("http") else f"{self.base_url}{path}"
+        request_timeout = kwargs.pop("timeout", SPORTS_REQUEST_TIMEOUT_SECONDS)
         response = self.session.request(
             method,
             url,
             allow_redirects=allow_redirects,
+            timeout=request_timeout,
             **kwargs,
         )
         if retry_auth and self._looks_like_login(response):
@@ -750,6 +771,34 @@ class SportsReservationClient(OAuthClientBase):
         return selected, missing
 
     @staticmethod
+    def rank_slot_candidates(
+        *,
+        slots: list[FieldSlot],
+        time_slots: Iterable[str],
+        preferred_fields: Iterable[str] | None = None,
+    ) -> tuple[list[FieldSlot], list[str]]:
+        requested_time_slots = list(time_slots)
+        preferred_field_list = [field for field in (preferred_fields or []) if field]
+        preferred_order = {field: index for index, field in enumerate(preferred_field_list)}
+        ranked: list[FieldSlot] = []
+        missing: list[str] = []
+        for time_slot in requested_time_slots:
+            candidates = [slot for slot in slots if slot.time_slot == time_slot]
+            if preferred_field_list:
+                candidates = [slot for slot in candidates if slot.field_name in preferred_field_list]
+            candidates.sort(
+                key=lambda slot: (
+                    preferred_order.get(slot.field_name, len(preferred_order)),
+                    slot.field_name,
+                )
+            )
+            if not candidates:
+                missing.append(time_slot)
+                continue
+            ranked.extend(candidates)
+        return ranked, missing
+
+    @staticmethod
     def _slot_start_at(date_str: str, time_slot: str) -> datetime:
         start_text = time_slot.split("-", 1)[0]
         return datetime.strptime(f"{date_str} {start_text}", "%Y-%m-%d %H:%M")
@@ -769,6 +818,7 @@ class SportsReservationClient(OAuthClientBase):
         motion_type: MotionType,
         date_option: DateOption,
         selected_slots: list[FieldSlot],
+        fallback_candidates: tuple[ReservationAttemptCandidate, ...] = (),
     ) -> ReservationPreview:
         selected_spaces = tuple(self.build_selected_spaces(selected_slots))
         payload = self.build_confirm_order_payload(
@@ -781,6 +831,30 @@ class SportsReservationClient(OAuthClientBase):
         return ReservationPreview(
             motion_type=motion_type,
             date_option=date_option,
+            selected_slots=tuple(selected_slots),
+            selected_spaces=selected_spaces,
+            confirm_order_payload=payload,
+            total_price=f"{total_price:.2f}",
+            fallback_candidates=fallback_candidates,
+        )
+
+    def _build_attempt_candidate(
+        self,
+        *,
+        venue_id: str,
+        motion_type: MotionType,
+        date_option: DateOption,
+        selected_slots: list[FieldSlot],
+    ) -> ReservationAttemptCandidate:
+        selected_spaces = tuple(self.build_selected_spaces(selected_slots))
+        payload = self.build_confirm_order_payload(
+            venue_id=venue_id,
+            motion_type=motion_type,
+            date_option=date_option,
+            selected_spaces=list(selected_spaces),
+        )
+        total_price = sum(float(space["venuePrice"]) for space in selected_spaces)
+        return ReservationAttemptCandidate(
             selected_slots=tuple(selected_slots),
             selected_spaces=selected_spaces,
             confirm_order_payload=payload,
@@ -816,6 +890,25 @@ class SportsReservationClient(OAuthClientBase):
             date=target_date,
             date_id=date_option.date_id,
         )
+        fallback_candidates: tuple[ReservationAttemptCandidate, ...] = ()
+        if slot_selection_mode == SLOT_SELECTION_MODE_FIRST_AVAILABLE:
+            ranked_slots, missing = self.rank_slot_candidates(
+                slots=live_slots,
+                time_slots=time_slots,
+                preferred_fields=preferred_fields,
+            )
+            if not ranked_slots:
+                wanted = ", ".join(missing)
+                raise SportsAPIError(f"No selectable slots are available across preferred fallback times: {wanted}")
+            fallback_candidates = tuple(
+                self._build_attempt_candidate(
+                    venue_id=venue_id,
+                    motion_type=prepared_reservation.motion_type,
+                    date_option=date_option,
+                    selected_slots=[slot],
+                )
+                for slot in ranked_slots
+            )
         selected_slots, missing = self.choose_slots(
             slots=live_slots,
             time_slots=time_slots,
@@ -832,6 +925,7 @@ class SportsReservationClient(OAuthClientBase):
             motion_type=prepared_reservation.motion_type,
             date_option=date_option,
             selected_slots=selected_slots,
+            fallback_candidates=fallback_candidates,
         )
 
     def build_cron_preview(
@@ -877,6 +971,25 @@ class SportsReservationClient(OAuthClientBase):
                     continue
                 filtered_slots.append(slot)
 
+            fallback_candidates: tuple[ReservationAttemptCandidate, ...] = ()
+            if slot_selection_mode == SLOT_SELECTION_MODE_FIRST_AVAILABLE:
+                ranked_slots, missing = self.rank_slot_candidates(
+                    slots=filtered_slots,
+                    time_slots=requested_time_slots,
+                    preferred_fields=preferred_fields,
+                )
+                if not ranked_slots:
+                    continue
+                fallback_candidates = tuple(
+                    self._build_attempt_candidate(
+                        venue_id=venue_id,
+                        motion_type=motion_type,
+                        date_option=date_option,
+                        selected_slots=[slot],
+                    )
+                    for slot in ranked_slots
+                )
+
             selected_slots, missing = self.choose_slots(
                 slots=filtered_slots,
                 time_slots=requested_time_slots,
@@ -891,6 +1004,7 @@ class SportsReservationClient(OAuthClientBase):
                 motion_type=motion_type,
                 date_option=date_option,
                 selected_slots=selected_slots,
+                fallback_candidates=fallback_candidates,
             )
 
         if not saw_date_in_window:
