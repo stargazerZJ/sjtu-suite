@@ -23,9 +23,9 @@ from flask import Flask, jsonify, render_template_string, request
 from sjtusuite.auth import JACLogin
 from sjtusuite.clients.sports import (
     SPORTS_TIME_SLOTS,
-    DateOption,
-    FieldSlot,
-    MotionType,
+    SLOT_SELECTION_MODE_ALL_REQUIRED,
+    SLOT_SELECTION_MODE_FIRST_AVAILABLE,
+    PreparedTargetDateReservation,
     SportsAPIError,
     SportsReservationClient,
 )
@@ -125,7 +125,12 @@ def _normalize_time_slots(values: list[str] | tuple[str, ...] | str) -> list[str
     if isinstance(values, str):
         values = [item.strip() for item in values.split(",")]
     seen: set[str] = set()
-    normalized = [slot for slot in SPORTS_TIME_SLOTS if slot in values and slot not in seen and not seen.add(slot)]
+    normalized: list[str] = []
+    for slot in values:
+        if slot not in SPORTS_TIME_SLOTS or slot in seen:
+            continue
+        seen.add(slot)
+        normalized.append(slot)
     return normalized
 
 
@@ -148,6 +153,7 @@ class ReservationJob:
     target_date: str
     time_slots: list[str]
     run_on_date: str | None = None
+    slot_selection_mode: str = SLOT_SELECTION_MODE_ALL_REQUIRED
     preferred_fields: list[str] = field(default_factory=list)
     enabled: bool = True
     retry_window_seconds: int = 180
@@ -188,6 +194,7 @@ class ReservationJob:
             job_type=payload.get("job_type", JOB_TYPE_TARGET_DATE),
             target_date=payload.get("target_date", ""),
             run_on_date=run_on_date if run_on_date is not None else None,
+            slot_selection_mode=payload.get("slot_selection_mode", SLOT_SELECTION_MODE_ALL_REQUIRED),
             time_slots=_normalize_time_slots(payload.get("time_slots", [])),
             preferred_fields=_normalize_fields(payload.get("preferred_fields")),
             enabled=bool(payload.get("enabled", True)),
@@ -215,17 +222,10 @@ class ReservationJob:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
-
-@dataclass(slots=True)
-class PreparedTargetDateJob:
-    motion_type: MotionType
-    date_option: DateOption | None = None
-
-
 @dataclass(slots=True)
 class PreparedRunContext:
     client: SportsReservationClient
-    prepared_job: PreparedTargetDateJob
+    prepared_job: PreparedTargetDateReservation
     warmed_at_monotonic: float
 
 
@@ -288,23 +288,10 @@ class SportsReservationDaemon:
             "motion": job.motion,
             "target_date": job.target_date,
             "run_on_date": job.run_on_date,
+            "slot_selection_mode": job.slot_selection_mode,
             "time_slots": job.time_slots,
             "preferred_fields": job.preferred_fields,
         }
-
-    @staticmethod
-    def _slots_for_log(slots: list[FieldSlot]) -> list[dict[str, Any]]:
-        return [
-            {
-                "field": slot.field_name,
-                "time": slot.time_slot,
-                "price": slot.price,
-                "status": slot.status,
-                "count": slot.count,
-                "sign": slot.sign,
-            }
-            for slot in slots
-        ]
 
     @staticmethod
     def _preview_for_log(preview: dict[str, Any]) -> dict[str, Any]:
@@ -331,7 +318,7 @@ class SportsReservationDaemon:
         job: ReservationJob,
         *,
         client: SportsReservationClient,
-        prepared_job: PreparedTargetDateJob,
+        prepared_job: PreparedTargetDateReservation,
     ) -> None:
         with self.prepared_contexts_lock:
             self.prepared_contexts[job.job_id] = PreparedRunContext(
@@ -413,6 +400,13 @@ class SportsReservationDaemon:
         return normalized
 
     @staticmethod
+    def _validate_slot_selection_mode(slot_selection_mode: str) -> str:
+        normalized = (slot_selection_mode or SLOT_SELECTION_MODE_ALL_REQUIRED).strip()
+        if normalized not in {SLOT_SELECTION_MODE_ALL_REQUIRED, SLOT_SELECTION_MODE_FIRST_AVAILABLE}:
+            raise ValueError(f"Unknown slot_selection_mode: {slot_selection_mode}")
+        return normalized
+
+    @staticmethod
     def _cron_scheduler_job_id(job_id: str) -> str:
         return f"sports-cron-{job_id}"
 
@@ -478,6 +472,9 @@ class SportsReservationDaemon:
             raise ValueError("Choose at least one time slot.")
 
         job_type = self._validate_job_type(payload.get("job_type", JOB_TYPE_TARGET_DATE))
+        slot_selection_mode = self._validate_slot_selection_mode(
+            payload.get("slot_selection_mode", SLOT_SELECTION_MODE_ALL_REQUIRED)
+        )
         target_date = (payload.get("target_date") or "").strip()
         run_on_date = self._normalize_run_on_date(payload.get("run_on_date"))
         if job_type == JOB_TYPE_TARGET_DATE:
@@ -507,6 +504,7 @@ class SportsReservationDaemon:
             job_type=job_type,
             target_date=target_date,
             run_on_date=run_on_date,
+            slot_selection_mode=slot_selection_mode,
             time_slots=time_slots,
             preferred_fields=_normalize_fields(payload.get("preferred_fields")),
             enabled=bool(payload.get("enabled", True)),
@@ -547,6 +545,8 @@ class SportsReservationDaemon:
                 job.motion = payload["motion"].strip()
             if "job_type" in payload:
                 job.job_type = self._validate_job_type(payload["job_type"])
+            if "slot_selection_mode" in payload:
+                job.slot_selection_mode = self._validate_slot_selection_mode(payload["slot_selection_mode"])
             if "target_date" in payload:
                 target_date = (payload["target_date"] or "").strip()
                 if job.job_type == JOB_TYPE_TARGET_DATE:
@@ -679,319 +679,49 @@ class SportsReservationDaemon:
     def get_availability(self, venue_id: str, motion: str) -> list[dict[str, Any]]:
         self._log(logging.DEBUG, "Fetching venue availability.", venue_id=venue_id, motion=motion)
         client = self.create_client()
-        motion_type = client.resolve_motion_type(venue_id, motion)
-        options = client.list_date_options(venue_id, motion_type.id)
-        results = []
-        for option in options:
-            slots = client.list_available_slots(
-                venue_id,
-                motion_type.id,
-                date=option.date,
-                date_id=option.date_id,
-            )
-            results.append(
-                {
-                    "date": option.date,
-                    "view_str": option.view_str,
-                    "week": option.week,
-                    "selectable_count": len(slots),
-                    "selectable_slots": [
-                        {
-                            "field_name": slot.field_name,
-                            "time_slot": slot.time_slot,
-                            "price": slot.price,
-                            "field_id": slot.field_id,
-                        }
-                        for slot in slots
-                    ],
-                }
-            )
+        results = client.list_availability(venue_id, motion)
         self._log(logging.DEBUG, "Venue availability fetched.", venue_id=venue_id, motion=motion, visible_dates=len(results))
         return results
-
-    def _choose_slots(
-        self,
-        *,
-        slots: list[FieldSlot],
-        time_slots: list[str],
-        preferred_fields: list[str],
-    ) -> tuple[list[FieldSlot], list[str]]:
-        self._log(
-            logging.DEBUG,
-            "Choosing slots from current availability.",
-            time_slots=time_slots,
-            preferred_fields=preferred_fields,
-            candidate_slot_count=len(slots),
-            candidate_slots=self._slots_for_log(slots),
-        )
-        selected: list[FieldSlot] = []
-        missing: list[str] = []
-        preferred_order = {field: index for index, field in enumerate(preferred_fields)}
-        for time_slot in time_slots:
-            candidates = [slot for slot in slots if slot.time_slot == time_slot]
-            if preferred_fields:
-                candidates = [slot for slot in candidates if slot.field_name in preferred_fields]
-            candidates.sort(
-                key=lambda slot: (
-                    preferred_order.get(slot.field_name, len(preferred_order)),
-                    slot.field_name,
-                )
-            )
-            if not candidates:
-                missing.append(time_slot)
-                continue
-            selected.append(candidates[0])
-        self._log(
-            logging.DEBUG,
-            "Slot choice completed.",
-            selected_slots=self._slots_for_log(selected),
-            missing_time_slots=missing,
-        )
-        return selected, missing
-
-    def _prepare_target_date_job(
-        self,
-        client: SportsReservationClient,
-        job: ReservationJob,
-    ) -> PreparedTargetDateJob:
-        self._log(logging.DEBUG, "Preparing target-date booking context.", **self._job_fields(job))
-        motion_type = client.resolve_motion_type(job.venue_id, job.motion)
-        self._log(
-            logging.DEBUG,
-            "Resolved motion type for target-date booking.",
-            **self._job_fields(job),
-            motion_type_id=motion_type.id,
-            motion_type_name=motion_type.name,
-            tension=motion_type.tension,
-        )
-        return PreparedTargetDateJob(motion_type=motion_type)
 
     def build_job_preview(
         self,
         client: SportsReservationClient,
         job: ReservationJob,
         *,
-        prepared: PreparedTargetDateJob | None = None,
+        prepared: PreparedTargetDateReservation | None = None,
     ) -> dict[str, Any]:
         if job.job_type == JOB_TYPE_CRON:
-            return self._build_cron_preview(client, job)
-
-        self._log(logging.DEBUG, "Building target-date booking preview.", **self._job_fields(job))
-        prepared = prepared or self._prepare_target_date_job(client, job)
-        motion_type = prepared.motion_type
-        date_option = prepared.date_option
-        if not date_option or date_option.date != job.target_date:
-            self._log(
-                logging.DEBUG,
-                "Fetching visible date options for target-date booking.",
-                **self._job_fields(job),
-                motion_type_id=motion_type.id,
-            )
-            date_options = client.list_date_options(job.venue_id, motion_type.id)
-            date_map = {item.date: item for item in date_options}
-            self._log(
-                logging.DEBUG,
-                "Fetched visible date options for target-date booking.",
-                **self._job_fields(job),
-                visible_dates=[item.date for item in date_options],
-            )
-            if job.target_date not in date_map:
-                raise SportsAPIError(
-                    f"{job.target_date} is not in the current reservation window yet."
-                )
-            date_option = date_map[job.target_date]
-            prepared.date_option = date_option
-            self._log(
-                logging.DEBUG,
-                "Resolved date option for target-date booking.",
-                **self._job_fields(job),
-                date_id=date_option.date_id,
-                view_str=date_option.view_str,
-            )
-        self._log(
-            logging.DEBUG,
-            "Fetching live slots for target-date booking.",
-            **self._job_fields(job),
-            motion_type_id=motion_type.id,
-            date_id=date_option.date_id,
-        )
-        live_slots = client.list_available_slots(
-            job.venue_id,
-            motion_type.id,
-            date=job.target_date,
-            date_id=date_option.date_id,
-        )
-        self._log(
-            logging.DEBUG,
-            "Fetched live slots for target-date booking.",
-            **self._job_fields(job),
-            date_id=date_option.date_id,
-            live_slot_count=len(live_slots),
-            live_slots=self._slots_for_log(live_slots),
-        )
-        selected_slots, missing = self._choose_slots(
-            slots=live_slots,
-            time_slots=job.time_slots,
-            preferred_fields=job.preferred_fields,
-        )
-        if missing:
-            wanted = ", ".join(missing)
-            raise SportsAPIError(f"No selectable slots are available for: {wanted}")
-        selected_spaces = client.build_selected_spaces(selected_slots)
-        payload = client.build_confirm_order_payload(
-            venue_id=job.venue_id,
-            motion_type=motion_type,
-            date_option=date_option,
-            selected_spaces=selected_spaces,
-        )
-        total_price = sum(float(space["venuePrice"]) for space in selected_spaces)
-        preview = {
-            "motion_type": asdict(motion_type),
-            "date_option": asdict(date_option),
-            "selected_slots": [asdict(slot) for slot in selected_slots],
-            "confirm_order_payload": payload,
-            "total_price": f"{total_price:.2f}",
-        }
-        self._log(logging.DEBUG, "Built target-date booking preview.", **self._job_fields(job), preview=self._preview_for_log(preview))
-        return preview
-
-    @staticmethod
-    def _slot_start_at(date_str: str, time_slot: str) -> datetime:
-        start_text = time_slot.split("-", 1)[0]
-        return datetime.strptime(f"{date_str} {start_text}", "%Y-%m-%d %H:%M")
-
-    def _build_cron_preview(self, client: SportsReservationClient, job: ReservationJob) -> dict[str, Any]:
-        self._log(logging.DEBUG, "Building cron booking preview.", **self._job_fields(job))
-        motion_type = client.resolve_motion_type(job.venue_id, job.motion)
-        self._log(
-            logging.DEBUG,
-            "Resolved motion type for cron booking.",
-            **self._job_fields(job),
-            motion_type_id=motion_type.id,
-            motion_type_name=motion_type.name,
-        )
-        date_options = client.list_date_options(job.venue_id, motion_type.id)
-        today = _now().date()
-        window_start = today + timedelta(days=job.window_start_days)
-        window_end = today + timedelta(days=job.window_end_days)
-        wanted_times = set(job.time_slots)
-        now = _now()
-        saw_date_in_window = False
-        cutoff_filtered = False
-        self._log(
-            logging.DEBUG,
-            "Fetched visible date options for cron booking.",
-            **self._job_fields(job),
-            visible_dates=[item.date for item in date_options],
-            window_start=window_start.isoformat(),
-            window_end=window_end.isoformat(),
-        )
-
-        for date_option in date_options:
-            date_value = _parse_date(date_option.date)
-            if date_value < window_start or date_value > window_end:
-                self._log(
-                    logging.DEBUG,
-                    "Skipping visible date outside cron window.",
-                    **self._job_fields(job),
-                    visible_date=date_option.date,
-                    window_start=window_start.isoformat(),
-                    window_end=window_end.isoformat(),
-                )
-                continue
-            saw_date_in_window = True
-            self._log(
-                logging.DEBUG,
-                "Fetching live slots for cron booking date.",
-                **self._job_fields(job),
-                visible_date=date_option.date,
-                date_id=date_option.date_id,
-            )
-            live_slots = client.list_available_slots(
-                job.venue_id,
-                motion_type.id,
-                date=date_option.date,
-                date_id=date_option.date_id,
-            )
-            self._log(
-                logging.DEBUG,
-                "Fetched live slots for cron booking date.",
-                **self._job_fields(job),
-                visible_date=date_option.date,
-                date_id=date_option.date_id,
-                live_slot_count=len(live_slots),
-                live_slots=self._slots_for_log(live_slots),
-            )
-            filtered_slots: list[FieldSlot] = []
-            for slot in live_slots:
-                if slot.time_slot not in wanted_times:
-                    continue
-                slot_start = self._slot_start_at(date_option.date, slot.time_slot)
-                if slot_start - now < timedelta(hours=job.redeem_deadline_hours):
-                    cutoff_filtered = True
-                    self._log(
-                        logging.DEBUG,
-                        "Skipping slot past redeem deadline.",
-                        **self._job_fields(job),
-                        visible_date=date_option.date,
-                        slot={"field": slot.field_name, "time": slot.time_slot},
-                        slot_start=slot_start,
-                    )
-                    continue
-                filtered_slots.append(slot)
-            self._log(
-                logging.DEBUG,
-                "Filtered cron live slots for requested times.",
-                **self._job_fields(job),
-                visible_date=date_option.date,
-                filtered_slot_count=len(filtered_slots),
-                filtered_slots=self._slots_for_log(filtered_slots),
-            )
-
-            selected_slots, missing = self._choose_slots(
-                slots=filtered_slots,
+            self._log(logging.DEBUG, "Building cron booking preview.", **self._job_fields(job))
+            preview = client.build_cron_preview(
+                venue_id=job.venue_id,
+                motion=job.motion,
                 time_slots=job.time_slots,
                 preferred_fields=job.preferred_fields,
+                slot_selection_mode=job.slot_selection_mode,
+                window_start_days=job.window_start_days,
+                window_end_days=job.window_end_days,
+                redeem_deadline_hours=job.redeem_deadline_hours,
+                now=_now(),
             )
-            if missing:
-                self._log(
-                    logging.DEBUG,
-                    "Cron booking date missing requested slots.",
-                    **self._job_fields(job),
-                    visible_date=date_option.date,
-                    missing_time_slots=missing,
-                )
-                continue
-
-            selected_spaces = client.build_selected_spaces(selected_slots)
-            payload = client.build_confirm_order_payload(
+        else:
+            self._log(logging.DEBUG, "Building target-date booking preview.", **self._job_fields(job))
+            preview = client.build_target_date_preview(
                 venue_id=job.venue_id,
-                motion_type=motion_type,
-                date_option=date_option,
-                selected_spaces=selected_spaces,
+                motion=job.motion,
+                target_date=job.target_date,
+                time_slots=job.time_slots,
+                preferred_fields=job.preferred_fields,
+                slot_selection_mode=job.slot_selection_mode,
+                prepared=prepared,
             )
-            total_price = sum(float(space["venuePrice"]) for space in selected_spaces)
-            preview = {
-                "motion_type": asdict(motion_type),
-                "date_option": asdict(date_option),
-                "selected_slots": [asdict(slot) for slot in selected_slots],
-                "confirm_order_payload": payload,
-                "total_price": f"{total_price:.2f}",
-            }
-            self._log(logging.DEBUG, "Built cron booking preview.", **self._job_fields(job), preview=self._preview_for_log(preview))
-            return preview
-
-        if not saw_date_in_window:
-            raise SportsAPIError(
-                f"No reservable dates are currently exposed between {window_start.isoformat()} and {window_end.isoformat()}."
-            )
-        if cutoff_filtered:
-            raise SportsAPIError(
-                "Matching slots exist but are already past the redeem deadline."
-            )
-        raise SportsAPIError(
-            "No selectable slots are available in the configured cron window for the requested time slots."
+        preview_dict = preview.to_dict()
+        self._log(
+            logging.DEBUG,
+            "Built booking preview.",
+            **self._job_fields(job),
+            preview=self._preview_for_log(preview_dict),
         )
+        return preview_dict
 
     def _mark_job(
         self,
@@ -1047,7 +777,10 @@ class SportsReservationDaemon:
             try:
                 self._log(logging.INFO, "Preparing target-date reservation job before noon.", **self._job_fields(job))
                 client = self.create_client()
-                prepared_job = self._prepare_target_date_job(client, job)
+                prepared_job = client.prepare_target_date_reservation(
+                    venue_id=job.venue_id,
+                    motion=job.motion,
+                )
                 self._store_prepared_context(job, client=client, prepared_job=prepared_job)
             except Exception as exc:  # pragma: no cover - defensive logging
                 self.logger.exception(
@@ -1104,7 +837,10 @@ class SportsReservationDaemon:
             else:
                 client = self.create_client()
                 prepared_target_job = (
-                    self._prepare_target_date_job(client, job)
+                    client.prepare_target_date_reservation(
+                        venue_id=job.venue_id,
+                        motion=job.motion,
+                    )
                     if job.job_type == JOB_TYPE_TARGET_DATE
                     else None
                 )
@@ -1625,12 +1361,19 @@ button:hover { opacity: 0.85; }
         <div class="field-pair">
             <div class="field-row">
                 <label for="preferredFields">偏好场地</label>
-                <input id="preferredFields" placeholder="可选，英文逗号分隔">
+                <input id="preferredFields" placeholder="按优先级填写，如：场地1,场地2,场地3">
             </div>
             <div class="field-row" id="retryIntervalRow">
                 <label for="retryInterval">重试间隔 (秒)</label>
                 <input id="retryInterval" type="number" min="0.2" step="0.1" value="1.0">
             </div>
+        </div>
+        <div class="field-row">
+            <label for="slotSelectionMode">时间段策略</label>
+            <select id="slotSelectionMode">
+                <option value="first_available">按优先级抢一个场地时段</option>
+                <option value="all_required">必须同时满足所有已选时间段</option>
+            </select>
         </div>
         <div class="field-row">
             <label>时间段</label>
@@ -1640,7 +1383,7 @@ button:hover { opacity: 0.85; }
             <button type="button" class="btn-primary" onclick="createJob()">保存任务</button>
             <button type="button" class="btn-ghost" onclick="refreshStatus()">刷新</button>
         </div>
-        <div id="modeHelp" class="info-box">指定日期模式默认会在下一个到来的中午运行，你也可以手动指定具体哪一天中午执行。定时监控模式将每隔几分钟扫描配置的日期窗口内的新释放场地，并在下单截止前预订。</div>
+        <div id="modeHelp" class="info-box">指定日期模式默认会在下一个到来的中午运行，你也可以手动指定具体哪一天中午执行。时间段策略选择“按优先级抢一个场地时段”时，会按你勾选时间段的先后顺序，以及偏好场地的填写顺序，从同一次可用性检查结果里挑出第一个可下单组合，只提交一个场地，适合“每天同项目只能下一单”的规则。定时监控模式将每隔几分钟扫描配置的日期窗口内的新释放场地，并在下单截止前预订。</div>
         <div id="availabilityBox" class="info-box">搜索场馆以查看可用性。</div>
     </div>
 
@@ -1665,13 +1408,23 @@ button:hover { opacity: 0.85; }
 <script>
 const TIME_SLOTS = {{ time_slots | safe }};
 let cachedVenues = [];
+let timeSlotPriority = [];
 
 function esc(v) {
     return String(v ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 }
 
 function selectedTimeSlots() {
-    return [...document.querySelectorAll('input[name="timeSlot"]:checked')].map(i => i.value);
+    const checked = new Set(
+        [...document.querySelectorAll('input[name="timeSlot"]:checked')].map(i => i.value)
+    );
+    timeSlotPriority = timeSlotPriority.filter(value => checked.has(value));
+    return [...timeSlotPriority];
+}
+
+function updateTimeSlotPriority(slot, checked) {
+    timeSlotPriority = timeSlotPriority.filter(value => value !== slot);
+    if (checked) timeSlotPriority.push(slot);
 }
 
 function formatLocalDate(date) {
@@ -1712,7 +1465,7 @@ function toggleJobMode() {
 
 function renderTimeSlots() {
     document.getElementById("timeSlotGrid").innerHTML = TIME_SLOTS.map(s =>
-        `<label><input type="checkbox" name="timeSlot" value="${s}"> ${s}</label>`
+        `<label><input type="checkbox" name="timeSlot" value="${s}" onchange="updateTimeSlotPriority('${s}', this.checked)"> ${s}</label>`
     ).join("");
 }
 
@@ -1774,6 +1527,7 @@ async function createJob() {
         motion: document.getElementById("motionSelect").value,
         target_date: jobType === "target_date" ? document.getElementById("targetDate").value : "",
         run_on_date: jobType === "target_date" ? document.getElementById("runOnDate").value : "",
+        slot_selection_mode: document.getElementById("slotSelectionMode").value,
         preferred_fields: document.getElementById("preferredFields").value,
         time_slots: selectedTimeSlots(),
         retry_window_seconds: Number(document.getElementById("retryWindow").value || 180),
@@ -1789,7 +1543,13 @@ async function createJob() {
     document.getElementById("preferredFields").value = "";
     resetRunOnDateDefault(true);
     document.querySelectorAll('input[name="timeSlot"]').forEach(i => { i.checked = false; });
+    timeSlotPriority = [];
     await refreshStatus();
+}
+
+function slotSelectionModeLabel(mode) {
+    if (mode === "first_available") return "按优先级抢一个";
+    return "全部时间段都要满足";
 }
 
 async function toggleJob(id, en) {
@@ -1828,6 +1588,7 @@ function renderJobs(jobs) {
                             ? `定时检查 每 ${esc(j.cron_interval_minutes)} 分钟 · 天数 +${esc(j.window_start_days)} 至 +${esc(j.window_end_days)}<br>下单截止: 提前 ${esc(j.redeem_deadline_hours)} 小时 · 时间段: ${esc(j.time_slots.join(", "))}`
                             : `${esc(j.target_date)} · ${esc(j.time_slots.join(", "))}<br>计划运行: ${esc(j.run_on_date ? `${j.run_on_date} 12:00` : "每天中午（旧任务）")} · 重试窗口: ${esc(j.retry_window_seconds)} 秒`
                         }<br>
+                        策略: ${esc(slotSelectionModeLabel(j.slot_selection_mode))}<br>
                         场地: ${esc(j.preferred_fields.join(", ") || "任意")}
                     </div>
                 </div>

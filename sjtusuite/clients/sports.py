@@ -8,8 +8,8 @@ import string
 import subprocess
 import time
 import uuid
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta
 from typing import Any, Iterable
 from urllib.parse import quote, urlencode
 
@@ -30,6 +30,8 @@ SPORTS_PUBLIC_KEY = (
 DEFAULT_RETURN_URL = "https://sports.sjtu.edu.cn/#/paymentResult/1"
 SPORTS_TIME_SLOTS = [f"{hour:02d}:00-{hour + 1:02d}:00" for hour in range(7, 22)]
 UNAVAILABLE_STATUSES = {-3, -2, -1}
+SLOT_SELECTION_MODE_ALL_REQUIRED = "all_required"
+SLOT_SELECTION_MODE_FIRST_AVAILABLE = "first_available"
 
 
 class SportsAPIError(RuntimeError):
@@ -99,6 +101,32 @@ class FieldSlot:
     @property
     def is_selectable(self) -> bool:
         return self.status == 0
+
+
+@dataclass(slots=True)
+class PreparedTargetDateReservation:
+    motion_type: MotionType
+    date_option: DateOption | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class ReservationPreview:
+    motion_type: MotionType
+    date_option: DateOption
+    selected_slots: tuple[FieldSlot, ...]
+    selected_spaces: tuple[dict[str, Any], ...]
+    confirm_order_payload: dict[str, Any]
+    total_price: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "motion_type": asdict(self.motion_type),
+            "date_option": asdict(self.date_option),
+            "selected_slots": [asdict(slot) for slot in self.selected_slots],
+            "selected_spaces": list(self.selected_spaces),
+            "confirm_order_payload": self.confirm_order_payload,
+            "total_price": self.total_price,
+        }
 
 
 def _format_view_str(date_str: str) -> str:
@@ -579,6 +607,36 @@ class SportsReservationClient(OAuthClientBase):
     def get_venue_notice(self, venue_id: str) -> dict[str, Any]:
         return self._json_request("POST", f"/venue/notice/newStadiumNotice?id={venue_id}")
 
+    def list_availability(self, venue_id: str, motion: str) -> list[dict[str, Any]]:
+        motion_type = self.resolve_motion_type(venue_id, motion)
+        options = self.list_date_options(venue_id, motion_type.id)
+        results: list[dict[str, Any]] = []
+        for option in options:
+            slots = self.list_available_slots(
+                venue_id,
+                motion_type.id,
+                date=option.date,
+                date_id=option.date_id,
+            )
+            results.append(
+                {
+                    "date": option.date,
+                    "view_str": option.view_str,
+                    "week": option.week,
+                    "selectable_count": len(slots),
+                    "selectable_slots": [
+                        {
+                            "field_name": slot.field_name,
+                            "time_slot": slot.time_slot,
+                            "price": slot.price,
+                            "field_id": slot.field_id,
+                        }
+                        for slot in slots
+                    ],
+                }
+            )
+        return results
+
     def list_date_options(
         self,
         venue_id: str,
@@ -657,6 +715,193 @@ class SportsReservationClient(OAuthClientBase):
             date_id=date_id,
         )
         return [slot for slot in slots if slot.is_selectable]
+
+    @staticmethod
+    def choose_slots(
+        *,
+        slots: list[FieldSlot],
+        time_slots: Iterable[str],
+        preferred_fields: Iterable[str] | None = None,
+        slot_selection_mode: str = SLOT_SELECTION_MODE_ALL_REQUIRED,
+    ) -> tuple[list[FieldSlot], list[str]]:
+        requested_time_slots = list(time_slots)
+        preferred_field_list = [field for field in (preferred_fields or []) if field]
+        preferred_order = {field: index for index, field in enumerate(preferred_field_list)}
+        selected: list[FieldSlot] = []
+        missing: list[str] = []
+        for time_slot in requested_time_slots:
+            candidates = [slot for slot in slots if slot.time_slot == time_slot]
+            if preferred_field_list:
+                candidates = [slot for slot in candidates if slot.field_name in preferred_field_list]
+            candidates.sort(
+                key=lambda slot: (
+                    preferred_order.get(slot.field_name, len(preferred_order)),
+                    slot.field_name,
+                )
+            )
+            if not candidates:
+                missing.append(time_slot)
+                continue
+            selected.append(candidates[0])
+            if slot_selection_mode == SLOT_SELECTION_MODE_FIRST_AVAILABLE:
+                break
+        if slot_selection_mode == SLOT_SELECTION_MODE_FIRST_AVAILABLE and selected:
+            return selected, []
+        return selected, missing
+
+    @staticmethod
+    def _slot_start_at(date_str: str, time_slot: str) -> datetime:
+        start_text = time_slot.split("-", 1)[0]
+        return datetime.strptime(f"{date_str} {start_text}", "%Y-%m-%d %H:%M")
+
+    def prepare_target_date_reservation(
+        self,
+        *,
+        venue_id: str,
+        motion: str,
+    ) -> PreparedTargetDateReservation:
+        return PreparedTargetDateReservation(motion_type=self.resolve_motion_type(venue_id, motion))
+
+    def _build_reservation_preview(
+        self,
+        *,
+        venue_id: str,
+        motion_type: MotionType,
+        date_option: DateOption,
+        selected_slots: list[FieldSlot],
+    ) -> ReservationPreview:
+        selected_spaces = tuple(self.build_selected_spaces(selected_slots))
+        payload = self.build_confirm_order_payload(
+            venue_id=venue_id,
+            motion_type=motion_type,
+            date_option=date_option,
+            selected_spaces=list(selected_spaces),
+        )
+        total_price = sum(float(space["venuePrice"]) for space in selected_spaces)
+        return ReservationPreview(
+            motion_type=motion_type,
+            date_option=date_option,
+            selected_slots=tuple(selected_slots),
+            selected_spaces=selected_spaces,
+            confirm_order_payload=payload,
+            total_price=f"{total_price:.2f}",
+        )
+
+    def build_target_date_preview(
+        self,
+        *,
+        venue_id: str,
+        motion: str,
+        target_date: str,
+        time_slots: Iterable[str],
+        preferred_fields: Iterable[str] | None = None,
+        slot_selection_mode: str = SLOT_SELECTION_MODE_ALL_REQUIRED,
+        prepared: PreparedTargetDateReservation | None = None,
+    ) -> ReservationPreview:
+        prepared_reservation = prepared or self.prepare_target_date_reservation(
+            venue_id=venue_id,
+            motion=motion,
+        )
+        date_option = prepared_reservation.date_option
+        if not date_option or date_option.date != target_date:
+            date_options = self.list_date_options(venue_id, prepared_reservation.motion_type.id)
+            date_map = {item.date: item for item in date_options}
+            if target_date not in date_map:
+                raise SportsAPIError(f"{target_date} is not in the current reservation window yet.")
+            date_option = date_map[target_date]
+            prepared_reservation.date_option = date_option
+        live_slots = self.list_available_slots(
+            venue_id,
+            prepared_reservation.motion_type.id,
+            date=target_date,
+            date_id=date_option.date_id,
+        )
+        selected_slots, missing = self.choose_slots(
+            slots=live_slots,
+            time_slots=time_slots,
+            preferred_fields=preferred_fields,
+            slot_selection_mode=slot_selection_mode,
+        )
+        if missing:
+            wanted = ", ".join(missing)
+            if slot_selection_mode == SLOT_SELECTION_MODE_FIRST_AVAILABLE:
+                raise SportsAPIError(f"No selectable slots are available across preferred fallback times: {wanted}")
+            raise SportsAPIError(f"No selectable slots are available for: {wanted}")
+        return self._build_reservation_preview(
+            venue_id=venue_id,
+            motion_type=prepared_reservation.motion_type,
+            date_option=date_option,
+            selected_slots=selected_slots,
+        )
+
+    def build_cron_preview(
+        self,
+        *,
+        venue_id: str,
+        motion: str,
+        time_slots: Iterable[str],
+        preferred_fields: Iterable[str] | None = None,
+        slot_selection_mode: str = SLOT_SELECTION_MODE_ALL_REQUIRED,
+        window_start_days: int = 0,
+        window_end_days: int = 7,
+        redeem_deadline_hours: int = 2,
+        now: datetime | None = None,
+    ) -> ReservationPreview:
+        motion_type = self.resolve_motion_type(venue_id, motion)
+        date_options = self.list_date_options(venue_id, motion_type.id)
+        reference_now = now or datetime.now()
+        window_start = reference_now.date() + timedelta(days=window_start_days)
+        window_end = reference_now.date() + timedelta(days=window_end_days)
+        requested_time_slots = list(time_slots)
+        saw_date_in_window = False
+        cutoff_filtered = False
+
+        for date_option in date_options:
+            date_value = datetime.strptime(date_option.date, "%Y-%m-%d").date()
+            if date_value < window_start or date_value > window_end:
+                continue
+            saw_date_in_window = True
+            live_slots = self.list_available_slots(
+                venue_id,
+                motion_type.id,
+                date=date_option.date,
+                date_id=date_option.date_id,
+            )
+            filtered_slots: list[FieldSlot] = []
+            for slot in live_slots:
+                if slot.time_slot not in requested_time_slots:
+                    continue
+                slot_start = self._slot_start_at(date_option.date, slot.time_slot)
+                if slot_start - reference_now < timedelta(hours=redeem_deadline_hours):
+                    cutoff_filtered = True
+                    continue
+                filtered_slots.append(slot)
+
+            selected_slots, missing = self.choose_slots(
+                slots=filtered_slots,
+                time_slots=requested_time_slots,
+                preferred_fields=preferred_fields,
+                slot_selection_mode=slot_selection_mode,
+            )
+            if missing:
+                continue
+
+            return self._build_reservation_preview(
+                venue_id=venue_id,
+                motion_type=motion_type,
+                date_option=date_option,
+                selected_slots=selected_slots,
+            )
+
+        if not saw_date_in_window:
+            raise SportsAPIError(
+                f"No reservable dates are currently exposed between {window_start.isoformat()} and {window_end.isoformat()}."
+            )
+        if cutoff_filtered:
+            raise SportsAPIError("Matching slots exist but are already past the redeem deadline.")
+        raise SportsAPIError(
+            "No selectable slots are available in the configured cron window for the requested time slots."
+        )
 
     @staticmethod
     def build_selected_spaces(slots: Iterable[FieldSlot]) -> list[dict[str, Any]]:
@@ -866,21 +1111,19 @@ class SportsReservationClient(OAuthClientBase):
             field_names=field_names,
             time_slots=time_slots,
         )
-        selected_spaces = self.build_selected_spaces(selected_slots)
-        payload = self.build_confirm_order_payload(
+        preview = self._build_reservation_preview(
             venue_id=venue_id,
             motion_type=motion_type,
             date_option=date_map[date],
-            selected_spaces=selected_spaces,
+            selected_slots=selected_slots,
         )
-        total = sum(float(space["venuePrice"]) for space in selected_spaces)
         return {
-            "motion_type": motion_type,
-            "date_option": date_map[date],
-            "selected_slots": selected_slots,
-            "selected_spaces": selected_spaces,
-            "confirm_order_payload": payload,
-            "total_price": f"{total:.2f}",
+            "motion_type": preview.motion_type,
+            "date_option": preview.date_option,
+            "selected_slots": list(preview.selected_slots),
+            "selected_spaces": list(preview.selected_spaces),
+            "confirm_order_payload": preview.confirm_order_payload,
+            "total_price": preview.total_price,
         }
 
     @staticmethod
