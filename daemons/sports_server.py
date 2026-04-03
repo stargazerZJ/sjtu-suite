@@ -831,19 +831,6 @@ class SportsReservationDaemon:
                 if job.job_type == JOB_TYPE_TARGET_DATE and triggered_by == "schedule"
                 else None
             )
-            if prepared_context:
-                client = prepared_context.client
-                prepared_target_job = prepared_context.prepared_job
-            else:
-                client = self.create_client()
-                prepared_target_job = (
-                    client.prepare_target_date_reservation(
-                        venue_id=job.venue_id,
-                        motion=job.motion,
-                    )
-                    if job.job_type == JOB_TYPE_TARGET_DATE
-                    else None
-                )
             retry_window_seconds = job.retry_window_seconds if job.job_type == JOB_TYPE_TARGET_DATE else 0
             deadline = time.time() + (retry_window_seconds if not dry_run else 0)
             attempt_count = 0
@@ -861,6 +848,49 @@ class SportsReservationDaemon:
                     retry_interval_seconds=job.retry_interval_seconds,
                     retry_window_remaining=f"{remaining_retry_window:.3f}",
                 )
+                try:
+                    if prepared_context and attempt_count == 1:
+                        client = prepared_context.client
+                        prepared_target_job = prepared_context.prepared_job
+                    else:
+                        client = self.create_client()
+                        prepared_target_job = (
+                            client.prepare_target_date_reservation(
+                                venue_id=job.venue_id,
+                                motion=job.motion,
+                            )
+                            if job.job_type == JOB_TYPE_TARGET_DATE
+                            else None
+                        )
+                except SportsAPIError as exc:
+                    message = str(exc)
+                    should_retry = (
+                        not dry_run
+                        and triggered_by in {"schedule", "manual"}
+                        and time.time() + job.retry_interval_seconds <= deadline
+                    )
+                    self._log(
+                        logging.WARNING,
+                        "Client setup failed for reservation attempt.",
+                        **self._job_fields(job),
+                        attempt=attempt_count,
+                        error=message,
+                        should_retry=should_retry,
+                        retry_sleep_seconds=job.retry_interval_seconds if should_retry else 0,
+                    )
+                    self._mark_job(job, status="submit_failed", message=message)
+                    if should_retry:
+                        self._log(
+                            logging.DEBUG,
+                            "Sleeping before retry after client setup failure.",
+                            **self._job_fields(job),
+                            attempt=attempt_count,
+                            sleep_seconds=job.retry_interval_seconds,
+                        )
+                        time.sleep(job.retry_interval_seconds)
+                        continue
+                    self.record_history(job, triggered_by, False, message, details={"attempts": attempt_count})
+                    return {"ok": False, "message": message, "attempts": attempt_count}
                 try:
                     preview = self.build_job_preview(
                         client,

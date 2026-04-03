@@ -32,7 +32,7 @@ SPORTS_TIME_SLOTS = [f"{hour:02d}:00-{hour + 1:02d}:00" for hour in range(7, 22)
 UNAVAILABLE_STATUSES = {-3, -2, -1}
 SLOT_SELECTION_MODE_ALL_REQUIRED = "all_required"
 SLOT_SELECTION_MODE_FIRST_AVAILABLE = "first_available"
-SPORTS_REQUEST_TIMEOUT_SECONDS = 1.0
+SPORTS_REQUEST_TIMEOUT_SECONDS = 5.0
 
 
 class SportsAPIError(RuntimeError):
@@ -325,8 +325,11 @@ class SportsReservationClient(OAuthClientBase):
             f"?response_type=code&client_id={SPORTS_CLIENT_ID}"
             f"&redirect_uri={quote(self.redirect_url, safe=':/')}"
         )
-        final_redirect_url = self.jac_login.login(auth_url)
-        self.session.get(final_redirect_url, allow_redirects=True, timeout=SPORTS_REQUEST_TIMEOUT_SECONDS)
+        try:
+            final_redirect_url = self.jac_login.login(auth_url)
+            self.session.get(final_redirect_url, allow_redirects=True, timeout=SPORTS_REQUEST_TIMEOUT_SECONDS)
+        except requests.RequestException as exc:
+            raise SportsAPIError(f"Sports login request failed: {exc}") from exc
         if not self.validate_session():
             raise SportsAPIError("Sports login failed.")
         self.save_session()
@@ -351,13 +354,16 @@ class SportsReservationClient(OAuthClientBase):
             )
         url = path if path.startswith("http") else f"{self.base_url}{path}"
         request_timeout = kwargs.pop("timeout", SPORTS_REQUEST_TIMEOUT_SECONDS)
-        response = self.session.request(
-            method,
-            url,
-            allow_redirects=allow_redirects,
-            timeout=request_timeout,
-            **kwargs,
-        )
+        try:
+            response = self.session.request(
+                method,
+                url,
+                allow_redirects=allow_redirects,
+                timeout=request_timeout,
+                **kwargs,
+            )
+        except requests.RequestException as exc:
+            raise SportsAPIError(f"Sports request failed for {method} {url}: {exc}") from exc
         if retry_auth and self._looks_like_login(response):
             self.login(force=True)
             return self._request(
