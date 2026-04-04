@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import logging
 import threading
@@ -19,12 +20,11 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from flask import Flask, jsonify, render_template_string, request
-
 from sjtusuite.auth import JACLogin
 from sjtusuite.clients.sports import (
-    SPORTS_TIME_SLOTS,
     SLOT_SELECTION_MODE_ALL_REQUIRED,
     SLOT_SELECTION_MODE_FIRST_AVAILABLE,
+    SPORTS_TIME_SLOTS,
     PreparedTargetDateReservation,
     SportsAPIError,
     SportsReservationClient,
@@ -34,7 +34,6 @@ from sjtusuite.core.credentials import credentials
 from sjtusuite.notifications import NtfyNotifier
 from sjtusuite.servers.base import get_client_ip
 
-
 TIMEZONE = "Asia/Shanghai"
 JOBS_FILE = get_data_dir() / "sports_reservation_jobs.json"
 LOG_FILE = get_data_dir() / "sports_reservation_daemon.log"
@@ -42,8 +41,39 @@ JOB_TYPE_TARGET_DATE = "target_date"
 JOB_TYPE_CRON = "cron"
 NOON_WARMUP_HOUR = 11
 NOON_WARMUP_MINUTE = 59
-NOON_WARMUP_SECOND = 55
-PREPARED_CONTEXT_TTL_SECONDS = 120
+NOON_WARMUP_SECOND = 00
+PREPARED_CONTEXT_TTL_SECONDS = 240
+TARGET_DATE_FAST_RETRY_INTERVAL_SECONDS = 0.2
+TARGET_DATE_BURST_WINDOW_SECONDS = 15.0
+TARGET_DATE_PREVIEW_BURST_CONCURRENCY = 4
+
+
+def _default_retry_interval_seconds(job_type: str) -> float:
+    return (
+        TARGET_DATE_FAST_RETRY_INTERVAL_SECONDS
+        if job_type == JOB_TYPE_TARGET_DATE
+        else 1.0
+    )
+
+
+def _is_transport_error(message: str) -> bool:
+    prefixes = (
+        "Sports request failed",
+        "Sports login request failed",
+        "Sports login failed",
+    )
+    return any(message.startswith(prefix) for prefix in prefixes)
+
+
+def _clone_prepared_target_date_reservation(
+    prepared: PreparedTargetDateReservation | None,
+) -> PreparedTargetDateReservation | None:
+    if prepared is None:
+        return None
+    return PreparedTargetDateReservation(
+        motion_type=prepared.motion_type,
+        date_option=prepared.date_option,
+    )
 
 
 def _configure_logger() -> logging.Logger:
@@ -81,7 +111,9 @@ def _format_log_value(value: Any) -> str:
 def _format_log_message(message: str, **fields: Any) -> str:
     if not fields:
         return message
-    serialized = ", ".join(f"{key}={_format_log_value(value)}" for key, value in fields.items())
+    serialized = ", ".join(
+        f"{key}={_format_log_value(value)}" for key, value in fields.items()
+    )
     return f"{message} | {serialized}"
 
 
@@ -157,7 +189,7 @@ class ReservationJob:
     preferred_fields: list[str] = field(default_factory=list)
     enabled: bool = True
     retry_window_seconds: int = 180
-    retry_interval_seconds: float = 1.0
+    retry_interval_seconds: float = TARGET_DATE_FAST_RETRY_INTERVAL_SECONDS
     auto_disable_on_success: bool = True
     cron_interval_minutes: int = 10
     window_start_days: int = 0
@@ -180,7 +212,10 @@ class ReservationJob:
         if run_on_date is not None:
             run_on_date = (run_on_date or "").strip() or None
         legacy_created_at = None
-        if run_on_date is None and payload.get("job_type", JOB_TYPE_TARGET_DATE) == JOB_TYPE_TARGET_DATE:
+        if (
+            run_on_date is None
+            and payload.get("job_type", JOB_TYPE_TARGET_DATE) == JOB_TYPE_TARGET_DATE
+        ):
             try:
                 legacy_created_at = _parse_datetime(created_at)
             except ValueError:
@@ -194,12 +229,21 @@ class ReservationJob:
             job_type=payload.get("job_type", JOB_TYPE_TARGET_DATE),
             target_date=payload.get("target_date", ""),
             run_on_date=run_on_date if run_on_date is not None else None,
-            slot_selection_mode=payload.get("slot_selection_mode", SLOT_SELECTION_MODE_ALL_REQUIRED),
+            slot_selection_mode=payload.get(
+                "slot_selection_mode", SLOT_SELECTION_MODE_ALL_REQUIRED
+            ),
             time_slots=_normalize_time_slots(payload.get("time_slots", [])),
             preferred_fields=_normalize_fields(payload.get("preferred_fields")),
             enabled=bool(payload.get("enabled", True)),
             retry_window_seconds=int(payload.get("retry_window_seconds", 180)),
-            retry_interval_seconds=float(payload.get("retry_interval_seconds", 1.0)),
+            retry_interval_seconds=float(
+                payload.get(
+                    "retry_interval_seconds",
+                    _default_retry_interval_seconds(
+                        payload.get("job_type", JOB_TYPE_TARGET_DATE)
+                    ),
+                )
+            ),
             auto_disable_on_success=bool(payload.get("auto_disable_on_success", True)),
             cron_interval_minutes=max(1, int(payload.get("cron_interval_minutes", 10))),
             window_start_days=max(0, int(payload.get("window_start_days", 0))),
@@ -211,7 +255,9 @@ class ReservationJob:
             last_status=payload.get("last_status", "idle"),
             last_message=payload.get(
                 "last_message",
-                _run_date_message(_next_noon_run_date_iso(legacy_created_at)) if legacy_created_at else "",
+                _run_date_message(_next_noon_run_date_iso(legacy_created_at))
+                if legacy_created_at
+                else "",
             ),
             last_order_id=payload.get("last_order_id"),
             last_payment_url=payload.get("last_payment_url"),
@@ -221,6 +267,7 @@ class ReservationJob:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
 
 @dataclass(slots=True)
 class PreparedRunContext:
@@ -311,7 +358,11 @@ class SportsReservationDaemon:
             for job_id in stale_job_ids:
                 self.prepared_contexts.pop(job_id, None)
         for job_id in stale_job_ids:
-            self._log(logging.DEBUG, "Discarded stale prepared reservation context.", job_id=job_id)
+            self._log(
+                logging.DEBUG,
+                "Discarded stale prepared reservation context.",
+                job_id=job_id,
+            )
 
     def _store_prepared_context(
         self,
@@ -326,14 +377,22 @@ class SportsReservationDaemon:
                 prepared_job=prepared_job,
                 warmed_at_monotonic=time.monotonic(),
             )
-        self._log(logging.DEBUG, "Stored prepared reservation context.", **self._job_fields(job))
+        self._log(
+            logging.DEBUG,
+            "Stored prepared reservation context.",
+            **self._job_fields(job),
+        )
 
     def _take_prepared_context(self, job: ReservationJob) -> PreparedRunContext | None:
         self._discard_stale_prepared_contexts()
         with self.prepared_contexts_lock:
             context = self.prepared_contexts.pop(job.job_id, None)
         if context:
-            self._log(logging.DEBUG, "Reusing prepared reservation context.", **self._job_fields(job))
+            self._log(
+                logging.DEBUG,
+                "Reusing prepared reservation context.",
+                **self._job_fields(job),
+            )
         return context
 
     def start(self) -> None:
@@ -355,24 +414,35 @@ class SportsReservationDaemon:
         client = SportsReservationClient(jac_login)
         if self.use_browser_session:
             client.load_playwright_browser_session()
-            self._log(logging.DEBUG, "Sports reservation client ready using browser session.")
+            self._log(
+                logging.DEBUG, "Sports reservation client ready using browser session."
+            )
             return client
         if not credentials.username or not credentials.password:
             raise SportsAPIError(
                 "Daemon mode needs credentials.json or env credentials unless it is started with --from-browser."
             )
         client.login()
-        self._log(logging.DEBUG, "Sports reservation client login completed with credentials.")
+        self._log(
+            logging.DEBUG, "Sports reservation client login completed with credentials."
+        )
         return client
 
     def _load_jobs(self) -> dict[str, ReservationJob]:
         if not self.jobs_file.exists():
-            self._log(logging.DEBUG, "Jobs file does not exist yet.", jobs_file=self.jobs_file)
+            self._log(
+                logging.DEBUG, "Jobs file does not exist yet.", jobs_file=self.jobs_file
+            )
             return {}
         with self.jobs_file.open("r", encoding="utf-8") as handle:
             payload = json.load(handle)
         jobs = payload.get("jobs", [])
-        self._log(logging.DEBUG, "Loaded sports reservation jobs from disk.", jobs_file=self.jobs_file, job_count=len(jobs))
+        self._log(
+            logging.DEBUG,
+            "Loaded sports reservation jobs from disk.",
+            jobs_file=self.jobs_file,
+            job_count=len(jobs),
+        )
         return {item["job_id"]: ReservationJob.from_dict(item) for item in jobs}
 
     def _save_jobs(self) -> None:
@@ -383,13 +453,22 @@ class SportsReservationDaemon:
         }
         with self.jobs_file.open("w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2)
-        self._log(logging.DEBUG, "Persisted sports reservation jobs to disk.", jobs_file=self.jobs_file, job_count=len(payload["jobs"]))
+        self._log(
+            logging.DEBUG,
+            "Persisted sports reservation jobs to disk.",
+            jobs_file=self.jobs_file,
+            job_count=len(payload["jobs"]),
+        )
 
     def list_jobs(self) -> list[ReservationJob]:
         with self.jobs_lock:
             return sorted(
                 self.jobs.values(),
-                key=lambda job: (job.target_date or "9999-12-31", job.name, job.created_at),
+                key=lambda job: (
+                    job.target_date or "9999-12-31",
+                    job.name,
+                    job.created_at,
+                ),
             )
 
     @staticmethod
@@ -402,7 +481,10 @@ class SportsReservationDaemon:
     @staticmethod
     def _validate_slot_selection_mode(slot_selection_mode: str) -> str:
         normalized = (slot_selection_mode or SLOT_SELECTION_MODE_ALL_REQUIRED).strip()
-        if normalized not in {SLOT_SELECTION_MODE_ALL_REQUIRED, SLOT_SELECTION_MODE_FIRST_AVAILABLE}:
+        if normalized not in {
+            SLOT_SELECTION_MODE_ALL_REQUIRED,
+            SLOT_SELECTION_MODE_FIRST_AVAILABLE,
+        }:
             raise ValueError(f"Unknown slot_selection_mode: {slot_selection_mode}")
         return normalized
 
@@ -430,7 +512,9 @@ class SportsReservationDaemon:
         for scheduler_id, job in desired.items():
             self.scheduler.add_job(
                 self.run_job,
-                trigger=IntervalTrigger(minutes=job.cron_interval_minutes, timezone=TIMEZONE),
+                trigger=IntervalTrigger(
+                    minutes=job.cron_interval_minutes, timezone=TIMEZONE
+                ),
                 id=scheduler_id,
                 replace_existing=True,
                 kwargs={
@@ -453,7 +537,9 @@ class SportsReservationDaemon:
     @staticmethod
     def _validate_target_run_on_date(run_on_date: str) -> str:
         scheduled_date = _parse_date(run_on_date)
-        scheduled_noon = datetime.combine(scheduled_date, datetime.min.time()).replace(hour=12)
+        scheduled_noon = datetime.combine(scheduled_date, datetime.min.time()).replace(
+            hour=12
+        )
         if scheduled_noon < _now():
             raise ValueError("Choose a scheduled noon that has not passed yet.")
         return run_on_date
@@ -466,12 +552,16 @@ class SportsReservationDaemon:
             return job
 
     def create_job(self, payload: dict[str, Any]) -> ReservationJob:
-        self._log(logging.DEBUG, "Creating reservation job from payload.", payload=payload)
+        self._log(
+            logging.DEBUG, "Creating reservation job from payload.", payload=payload
+        )
         time_slots = _normalize_time_slots(payload.get("time_slots", []))
         if not time_slots:
             raise ValueError("Choose at least one time slot.")
 
-        job_type = self._validate_job_type(payload.get("job_type", JOB_TYPE_TARGET_DATE))
+        job_type = self._validate_job_type(
+            payload.get("job_type", JOB_TYPE_TARGET_DATE)
+        )
         slot_selection_mode = self._validate_slot_selection_mode(
             payload.get("slot_selection_mode", SLOT_SELECTION_MODE_ALL_REQUIRED)
         )
@@ -481,15 +571,20 @@ class SportsReservationDaemon:
             if not target_date:
                 raise ValueError("Choose a target date.")
             _parse_date(target_date)
-            run_on_date = self._validate_target_run_on_date(run_on_date or _next_noon_run_date_iso())
+            run_on_date = self._validate_target_run_on_date(
+                run_on_date or _next_noon_run_date_iso()
+            )
         else:
             run_on_date = None
 
         window_start_days = max(0, int(payload.get("window_start_days", 0)))
         window_end_days = max(0, int(payload.get("window_end_days", 7)))
         if window_end_days < window_start_days:
-            raise ValueError("window_end_days must be greater than or equal to window_start_days.")
+            raise ValueError(
+                "window_end_days must be greater than or equal to window_start_days."
+            )
 
+        default_retry_interval = _default_retry_interval_seconds(job_type)
         job = ReservationJob(
             job_id=str(uuid.uuid4()),
             name=(payload.get("name") or "").strip()
@@ -509,14 +604,21 @@ class SportsReservationDaemon:
             preferred_fields=_normalize_fields(payload.get("preferred_fields")),
             enabled=bool(payload.get("enabled", True)),
             retry_window_seconds=max(10, int(payload.get("retry_window_seconds", 180))),
-            retry_interval_seconds=max(0.2, float(payload.get("retry_interval_seconds", 1.0))),
+            retry_interval_seconds=max(
+                0.2,
+                float(payload.get("retry_interval_seconds", default_retry_interval)),
+            ),
             auto_disable_on_success=bool(payload.get("auto_disable_on_success", True)),
             cron_interval_minutes=max(1, int(payload.get("cron_interval_minutes", 10))),
             window_start_days=window_start_days,
             window_end_days=window_end_days,
             redeem_deadline_hours=max(0, int(payload.get("redeem_deadline_hours", 2))),
-            last_status="waiting_schedule" if job_type == JOB_TYPE_TARGET_DATE else "idle",
-            last_message=_run_date_message(run_on_date) if job_type == JOB_TYPE_TARGET_DATE else _cron_waiting_message(),
+            last_status="waiting_schedule"
+            if job_type == JOB_TYPE_TARGET_DATE
+            else "idle",
+            last_message=_run_date_message(run_on_date)
+            if job_type == JOB_TYPE_TARGET_DATE
+            else _cron_waiting_message(),
         )
         with self.jobs_lock:
             self.jobs[job.job_id] = job
@@ -530,7 +632,9 @@ class SportsReservationDaemon:
         return job
 
     def update_job(self, job_id: str, payload: dict[str, Any]) -> ReservationJob:
-        self._log(logging.DEBUG, "Updating reservation job.", job_id=job_id, payload=payload)
+        self._log(
+            logging.DEBUG, "Updating reservation job.", job_id=job_id, payload=payload
+        )
         with self.jobs_lock:
             if job_id not in self.jobs:
                 raise KeyError(job_id)
@@ -546,7 +650,9 @@ class SportsReservationDaemon:
             if "job_type" in payload:
                 job.job_type = self._validate_job_type(payload["job_type"])
             if "slot_selection_mode" in payload:
-                job.slot_selection_mode = self._validate_slot_selection_mode(payload["slot_selection_mode"])
+                job.slot_selection_mode = self._validate_slot_selection_mode(
+                    payload["slot_selection_mode"]
+                )
             if "target_date" in payload:
                 target_date = (payload["target_date"] or "").strip()
                 if job.job_type == JOB_TYPE_TARGET_DATE:
@@ -556,7 +662,11 @@ class SportsReservationDaemon:
                 job.target_date = target_date
             if "run_on_date" in payload:
                 job.run_on_date = self._normalize_run_on_date(payload["run_on_date"])
-            elif "job_type" in payload and job.job_type == JOB_TYPE_TARGET_DATE and not job.run_on_date:
+            elif (
+                "job_type" in payload
+                and job.job_type == JOB_TYPE_TARGET_DATE
+                and not job.run_on_date
+            ):
                 job.run_on_date = _next_noon_run_date_iso()
             if "time_slots" in payload:
                 time_slots = _normalize_time_slots(payload["time_slots"])
@@ -570,22 +680,30 @@ class SportsReservationDaemon:
             if "retry_window_seconds" in payload:
                 job.retry_window_seconds = max(10, int(payload["retry_window_seconds"]))
             if "retry_interval_seconds" in payload:
-                job.retry_interval_seconds = max(0.2, float(payload["retry_interval_seconds"]))
+                job.retry_interval_seconds = max(
+                    0.2, float(payload["retry_interval_seconds"])
+                )
             if "auto_disable_on_success" in payload:
                 job.auto_disable_on_success = bool(payload["auto_disable_on_success"])
             if "cron_interval_minutes" in payload:
-                job.cron_interval_minutes = max(1, int(payload["cron_interval_minutes"]))
+                job.cron_interval_minutes = max(
+                    1, int(payload["cron_interval_minutes"])
+                )
             if "window_start_days" in payload:
                 job.window_start_days = max(0, int(payload["window_start_days"]))
             if "window_end_days" in payload:
                 job.window_end_days = max(0, int(payload["window_end_days"]))
             if "redeem_deadline_hours" in payload:
-                job.redeem_deadline_hours = max(0, int(payload["redeem_deadline_hours"]))
+                job.redeem_deadline_hours = max(
+                    0, int(payload["redeem_deadline_hours"])
+                )
 
             if job.job_type == JOB_TYPE_TARGET_DATE and not job.target_date:
                 raise ValueError("Choose a target date.")
             if job.job_type == JOB_TYPE_TARGET_DATE:
-                job.run_on_date = self._validate_target_run_on_date(job.run_on_date or _next_noon_run_date_iso())
+                job.run_on_date = self._validate_target_run_on_date(
+                    job.run_on_date or _next_noon_run_date_iso()
+                )
                 if job.last_status in {"idle", "waiting_schedule"}:
                     job.last_message = _run_date_message(job.run_on_date)
                     job.last_status = "waiting_schedule"
@@ -595,7 +713,9 @@ class SportsReservationDaemon:
                     job.last_message = _cron_waiting_message()
                     job.last_status = "idle"
             if job.window_end_days < job.window_start_days:
-                raise ValueError("window_end_days must be greater than or equal to window_start_days.")
+                raise ValueError(
+                    "window_end_days must be greater than or equal to window_start_days."
+                )
             job.updated_at = _now_iso()
             self._save_jobs()
             self._sync_cron_jobs()
@@ -645,7 +765,9 @@ class SportsReservationDaemon:
     def service_status(self) -> dict[str, Any]:
         next_run = None
         scheduled_job = self.scheduler.get_job("sports-noon-run")
-        next_run_time = getattr(scheduled_job, "next_run_time", None) if scheduled_job else None
+        next_run_time = (
+            getattr(scheduled_job, "next_run_time", None) if scheduled_job else None
+        )
         if next_run_time:
             next_run = next_run_time.isoformat()
         return {
@@ -659,14 +781,24 @@ class SportsReservationDaemon:
         self._log(logging.DEBUG, "Listing venues for dashboard search.", search=search)
         client = self.create_client()
         venues, _ = client.list_all_venues(venue_name=search)
-        self._log(logging.DEBUG, "Venue search completed.", search=search, venue_count=len(venues))
+        self._log(
+            logging.DEBUG,
+            "Venue search completed.",
+            search=search,
+            venue_count=len(venues),
+        )
         return [venue.raw for venue in venues]
 
     def get_venue_detail(self, venue_id: str) -> dict[str, Any]:
         self._log(logging.DEBUG, "Fetching venue detail.", venue_id=venue_id)
         client = self.create_client()
         detail = client.get_venue_detail(venue_id)
-        self._log(logging.DEBUG, "Venue detail fetched.", venue_id=venue_id, motion_type_count=len(detail.motion_types))
+        self._log(
+            logging.DEBUG,
+            "Venue detail fetched.",
+            venue_id=venue_id,
+            motion_type_count=len(detail.motion_types),
+        )
         return {
             "venue_id": detail.venue_id,
             "venue_name": detail.venue_name,
@@ -677,10 +809,21 @@ class SportsReservationDaemon:
         }
 
     def get_availability(self, venue_id: str, motion: str) -> list[dict[str, Any]]:
-        self._log(logging.DEBUG, "Fetching venue availability.", venue_id=venue_id, motion=motion)
+        self._log(
+            logging.DEBUG,
+            "Fetching venue availability.",
+            venue_id=venue_id,
+            motion=motion,
+        )
         client = self.create_client()
         results = client.list_availability(venue_id, motion)
-        self._log(logging.DEBUG, "Venue availability fetched.", venue_id=venue_id, motion=motion, visible_dates=len(results))
+        self._log(
+            logging.DEBUG,
+            "Venue availability fetched.",
+            venue_id=venue_id,
+            motion=motion,
+            visible_dates=len(results),
+        )
         return results
 
     def build_job_preview(
@@ -691,7 +834,9 @@ class SportsReservationDaemon:
         prepared: PreparedTargetDateReservation | None = None,
     ) -> dict[str, Any]:
         if job.job_type == JOB_TYPE_CRON:
-            self._log(logging.DEBUG, "Building cron booking preview.", **self._job_fields(job))
+            self._log(
+                logging.DEBUG, "Building cron booking preview.", **self._job_fields(job)
+            )
             preview = client.build_cron_preview(
                 venue_id=job.venue_id,
                 motion=job.motion,
@@ -704,7 +849,11 @@ class SportsReservationDaemon:
                 now=_now(),
             )
         else:
-            self._log(logging.DEBUG, "Building target-date booking preview.", **self._job_fields(job))
+            self._log(
+                logging.DEBUG,
+                "Building target-date booking preview.",
+                **self._job_fields(job),
+            )
             preview = client.build_target_date_preview(
                 venue_id=job.venue_id,
                 motion=job.motion,
@@ -733,6 +882,7 @@ class SportsReservationDaemon:
         order_id: str | None = None,
         payment: dict[str, Any] | None = None,
         success: bool = False,
+        persist: bool = True,
     ) -> None:
         with self.jobs_lock:
             job.last_status = status
@@ -748,8 +898,9 @@ class SportsReservationDaemon:
                 job.success_at = _now_iso()
                 if job.auto_disable_on_success:
                     job.enabled = False
-            self._save_jobs()
-            self._sync_cron_jobs()
+            if persist:
+                self._save_jobs()
+                self._sync_cron_jobs()
         self._log(
             logging.DEBUG,
             "Updated reservation job state.",
@@ -761,12 +912,100 @@ class SportsReservationDaemon:
             payment_url=job.last_payment_url,
             success=success,
             enabled=job.enabled,
+            persisted=persist,
         )
+
+    def _effective_retry_interval_seconds(
+        self, job: ReservationJob, *, triggered_by: str
+    ) -> float:
+        if job.job_type == JOB_TYPE_TARGET_DATE and triggered_by == "schedule":
+            return min(
+                job.retry_interval_seconds, TARGET_DATE_FAST_RETRY_INTERVAL_SECONDS
+            )
+        return job.retry_interval_seconds
+
+    def _should_use_preview_burst(
+        self,
+        job: ReservationJob,
+        *,
+        triggered_by: str,
+    ) -> bool:
+        if (
+            job.job_type != JOB_TYPE_TARGET_DATE
+            or triggered_by != "schedule"
+            or not job.run_on_date
+        ):
+            return False
+        scheduled_noon = datetime.combine(
+            _parse_date(job.run_on_date), datetime.min.time()
+        ).replace(hour=12)
+        elapsed = (_now() - scheduled_noon).total_seconds()
+        return 0 <= elapsed <= TARGET_DATE_BURST_WINDOW_SECONDS
+
+    def _build_job_preview_with_burst(
+        self,
+        client: SportsReservationClient,
+        job: ReservationJob,
+        *,
+        prepared: PreparedTargetDateReservation | None,
+        triggered_by: str,
+    ) -> dict[str, Any]:
+        if not self._should_use_preview_burst(job, triggered_by=triggered_by):
+            return self.build_job_preview(client, job, prepared=prepared)
+
+        worker_count = TARGET_DATE_PREVIEW_BURST_CONCURRENCY
+        self._log(
+            logging.DEBUG,
+            "Running concurrent preview burst.",
+            **self._job_fields(job),
+            worker_count=worker_count,
+        )
+
+        def worker(worker_index: int) -> dict[str, Any]:
+            worker_client = client.clone_with_session(
+                name_suffix=f"burst-{worker_index}"
+            )
+            worker_prepared = _clone_prepared_target_date_reservation(prepared)
+            return self.build_job_preview(worker_client, job, prepared=worker_prepared)
+
+        failures: list[SportsAPIError] = []
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=worker_count
+        ) as executor:
+            futures = [
+                executor.submit(worker, index) for index in range(1, worker_count + 1)
+            ]
+            try:
+                for future in concurrent.futures.as_completed(futures):
+                    try:
+                        preview = future.result()
+                        self._log(
+                            logging.DEBUG,
+                            "Concurrent preview burst succeeded.",
+                            **self._job_fields(job),
+                        )
+                        for pending in futures:
+                            if pending is not future:
+                                pending.cancel()
+                        return preview
+                    except SportsAPIError as exc:
+                        failures.append(exc)
+            finally:
+                for future in futures:
+                    future.cancel()
+
+        if failures:
+            raise failures[0]
+        raise SportsAPIError("Concurrent preview burst failed without a result.")
 
     def run_warmup_jobs(self) -> None:
         today = _now().date()
         self._discard_stale_prepared_contexts()
-        self._log(logging.INFO, "Running pre-noon warmup for target-date reservation jobs.", today=today.isoformat())
+        self._log(
+            logging.INFO,
+            "Running pre-noon warmup for target-date reservation jobs.",
+            today=today.isoformat(),
+        )
         for job in self.list_jobs():
             if not job.enabled or job.job_type != JOB_TYPE_TARGET_DATE:
                 continue
@@ -775,13 +1014,19 @@ class SportsReservationDaemon:
             if _parse_date(job.run_on_date) != today:
                 continue
             try:
-                self._log(logging.INFO, "Preparing target-date reservation job before noon.", **self._job_fields(job))
+                self._log(
+                    logging.INFO,
+                    "Preparing target-date reservation job before noon.",
+                    **self._job_fields(job),
+                )
                 client = self.create_client()
                 prepared_job = client.prepare_target_date_reservation(
                     venue_id=job.venue_id,
                     motion=job.motion,
                 )
-                self._store_prepared_context(job, client=client, prepared_job=prepared_job)
+                self._store_prepared_context(
+                    job, client=client, prepared_job=prepared_job
+                )
             except Exception as exc:  # pragma: no cover - defensive logging
                 self.logger.exception(
                     _format_log_message(
@@ -811,8 +1056,12 @@ class SportsReservationDaemon:
             if job.job_type == JOB_TYPE_TARGET_DATE:
                 target_date = _parse_date(job.target_date)
                 if target_date < today:
-                    self._mark_job(job, status="expired", message="Target date has already passed.")
-                    self.record_history(job, triggered_by, False, "Target date has already passed.")
+                    self._mark_job(
+                        job, status="expired", message="Target date has already passed."
+                    )
+                    self.record_history(
+                        job, triggered_by, False, "Target date has already passed."
+                    )
                     return {"ok": False, "message": "Target date has already passed."}
             if (
                 job.job_type == JOB_TYPE_TARGET_DATE
@@ -823,7 +1072,11 @@ class SportsReservationDaemon:
                 self._mark_job(job, status="waiting_window", message=message)
                 self.record_history(job, triggered_by, True, message)
                 return {"ok": True, "message": message}
-            if not dry_run and not job.enabled and triggered_by in {"schedule", JOB_TYPE_CRON}:
+            if (
+                not dry_run
+                and not job.enabled
+                and triggered_by in {"schedule", JOB_TYPE_CRON}
+            ):
                 return {"ok": False, "message": "Job is disabled."}
 
             prepared_context = (
@@ -831,12 +1084,23 @@ class SportsReservationDaemon:
                 if job.job_type == JOB_TYPE_TARGET_DATE and triggered_by == "schedule"
                 else None
             )
-            retry_window_seconds = job.retry_window_seconds if job.job_type == JOB_TYPE_TARGET_DATE else 0
+            client = prepared_context.client if prepared_context else None
+            prepared_target_job = (
+                prepared_context.prepared_job if prepared_context else None
+            )
+            retry_window_seconds = (
+                job.retry_window_seconds if job.job_type == JOB_TYPE_TARGET_DATE else 0
+            )
             deadline = time.time() + (retry_window_seconds if not dry_run else 0)
             attempt_count = 0
             while True:
                 attempt_count += 1
-                remaining_retry_window = max(0.0, deadline - time.time()) if not dry_run else 0.0
+                remaining_retry_window = (
+                    max(0.0, deadline - time.time()) if not dry_run else 0.0
+                )
+                retry_sleep_seconds = self._effective_retry_interval_seconds(
+                    job, triggered_by=triggered_by
+                )
                 self._log(
                     logging.DEBUG,
                     "Starting reservation attempt.",
@@ -845,29 +1109,26 @@ class SportsReservationDaemon:
                     dry_run=dry_run,
                     triggered_by=triggered_by,
                     retry_window_seconds=retry_window_seconds,
-                    retry_interval_seconds=job.retry_interval_seconds,
+                    retry_interval_seconds=retry_sleep_seconds,
                     retry_window_remaining=f"{remaining_retry_window:.3f}",
                 )
                 try:
-                    if prepared_context and attempt_count == 1:
-                        client = prepared_context.client
-                        prepared_target_job = prepared_context.prepared_job
-                    else:
+                    if client is None:
                         client = self.create_client()
-                        prepared_target_job = (
-                            client.prepare_target_date_reservation(
-                                venue_id=job.venue_id,
-                                motion=job.motion,
-                            )
-                            if job.job_type == JOB_TYPE_TARGET_DATE
-                            else None
+                    if (
+                        job.job_type == JOB_TYPE_TARGET_DATE
+                        and prepared_target_job is None
+                    ):
+                        prepared_target_job = client.prepare_target_date_reservation(
+                            venue_id=job.venue_id,
+                            motion=job.motion,
                         )
                 except SportsAPIError as exc:
                     message = str(exc)
                     should_retry = (
                         not dry_run
                         and triggered_by in {"schedule", "manual"}
-                        and time.time() + job.retry_interval_seconds <= deadline
+                        and time.time() + retry_sleep_seconds <= deadline
                     )
                     self._log(
                         logging.WARNING,
@@ -876,33 +1137,46 @@ class SportsReservationDaemon:
                         attempt=attempt_count,
                         error=message,
                         should_retry=should_retry,
-                        retry_sleep_seconds=job.retry_interval_seconds if should_retry else 0,
+                        retry_sleep_seconds=retry_sleep_seconds if should_retry else 0,
                     )
-                    self._mark_job(job, status="submit_failed", message=message)
+                    client = None
+                    self._mark_job(
+                        job,
+                        status="submit_failed",
+                        message=message,
+                        persist=not should_retry,
+                    )
                     if should_retry:
                         self._log(
                             logging.DEBUG,
                             "Sleeping before retry after client setup failure.",
                             **self._job_fields(job),
                             attempt=attempt_count,
-                            sleep_seconds=job.retry_interval_seconds,
+                            sleep_seconds=retry_sleep_seconds,
                         )
-                        time.sleep(job.retry_interval_seconds)
+                        time.sleep(retry_sleep_seconds)
                         continue
-                    self.record_history(job, triggered_by, False, message, details={"attempts": attempt_count})
+                    self.record_history(
+                        job,
+                        triggered_by,
+                        False,
+                        message,
+                        details={"attempts": attempt_count},
+                    )
                     return {"ok": False, "message": message, "attempts": attempt_count}
                 try:
-                    preview = self.build_job_preview(
+                    preview = self._build_job_preview_with_burst(
                         client,
                         job,
                         prepared=prepared_target_job,
+                        triggered_by=triggered_by,
                     )
                 except SportsAPIError as exc:
                     message = str(exc)
                     should_retry = (
                         not dry_run
                         and triggered_by in {"schedule", "manual"}
-                        and time.time() + job.retry_interval_seconds <= deadline
+                        and time.time() + retry_sleep_seconds <= deadline
                     )
                     self._log(
                         logging.WARNING,
@@ -911,21 +1185,31 @@ class SportsReservationDaemon:
                         attempt=attempt_count,
                         error=message,
                         should_retry=should_retry,
-                        retry_sleep_seconds=job.retry_interval_seconds if should_retry else 0,
+                        retry_sleep_seconds=retry_sleep_seconds if should_retry else 0,
                     )
                     status = "waiting_window" if "window" in message else "no_slots"
-                    self._mark_job(job, status=status, message=message)
+                    if _is_transport_error(message):
+                        client = None
+                    self._mark_job(
+                        job, status=status, message=message, persist=not should_retry
+                    )
                     if should_retry:
                         self._log(
                             logging.DEBUG,
                             "Sleeping before retry after preview failure.",
                             **self._job_fields(job),
                             attempt=attempt_count,
-                            sleep_seconds=job.retry_interval_seconds,
+                            sleep_seconds=retry_sleep_seconds,
                         )
-                        time.sleep(job.retry_interval_seconds)
+                        time.sleep(retry_sleep_seconds)
                         continue
-                    self.record_history(job, triggered_by, False, message, details={"attempts": attempt_count})
+                    self.record_history(
+                        job,
+                        triggered_by,
+                        False,
+                        message,
+                        details={"attempts": attempt_count},
+                    )
                     return {"ok": False, "message": message, "attempts": attempt_count}
 
                 if dry_run:
@@ -938,8 +1222,19 @@ class SportsReservationDaemon:
                         preview=self._preview_for_log(preview),
                     )
                     self._mark_job(job, status="preview_ready", message=message)
-                    self.record_history(job, triggered_by, True, message, details={"attempts": attempt_count})
-                    return {"ok": True, "message": message, "preview": preview, "attempts": attempt_count}
+                    self.record_history(
+                        job,
+                        triggered_by,
+                        True,
+                        message,
+                        details={"attempts": attempt_count},
+                    )
+                    return {
+                        "ok": True,
+                        "message": message,
+                        "preview": preview,
+                        "attempts": attempt_count,
+                    }
 
                 self._log(
                     logging.DEBUG,
@@ -947,124 +1242,190 @@ class SportsReservationDaemon:
                     **self._job_fields(job),
                     attempt=attempt_count,
                     preview=self._preview_for_log(preview),
-                    fallback_candidate_count=len(preview.get("fallback_candidates") or []),
+                    fallback_candidate_count=len(
+                        preview.get("fallback_candidates") or []
+                    ),
                 )
-                fallback_candidates = preview.get("fallback_candidates") or []
-                submit_candidates = fallback_candidates or [
-                    {
-                        "selected_slots": preview["selected_slots"],
-                        "selected_spaces": preview.get("selected_spaces", []),
-                        "confirm_order_payload": preview["confirm_order_payload"],
-                        "total_price": preview["total_price"],
-                    }
-                ]
-                last_response: dict[str, Any] | None = None
-                last_message = "Unknown reservation error"
-                for candidate_index, candidate in enumerate(submit_candidates, start=1):
-                    self._log(
-                        logging.DEBUG,
-                        "Submitting confirm order request.",
-                        **self._job_fields(job),
-                        attempt=attempt_count,
-                        candidate_index=candidate_index,
-                        candidate_count=len(submit_candidates),
-                        selected_slots=candidate.get("selected_slots", []),
-                    )
-                    response = client.confirm_personal_order(candidate["confirm_order_payload"])
-                    last_response = response
-                    self._log(
-                        logging.DEBUG,
-                        "Received confirm order response.",
-                        **self._job_fields(job),
-                        attempt=attempt_count,
-                        candidate_index=candidate_index,
-                        candidate_count=len(submit_candidates),
-                        response=response,
-                    )
-                    if response.get("code") == 0:
-                        successful_preview = dict(preview)
-                        successful_preview["selected_slots"] = candidate.get("selected_slots", [])
-                        successful_preview["selected_spaces"] = candidate.get("selected_spaces", [])
-                        successful_preview["confirm_order_payload"] = candidate["confirm_order_payload"]
-                        successful_preview["total_price"] = candidate.get("total_price", preview.get("total_price"))
-                        order_id = str(response["data"])
-                        self._log(
-                            logging.INFO,
-                            "Reservation order created; requesting payment initialization.",
-                            **self._job_fields(job),
-                            attempt=attempt_count,
-                            candidate_index=candidate_index,
-                            order_id=order_id,
-                        )
-                        payment = client.create_payment(order_id)
+                try:
+                    fallback_candidates = preview.get("fallback_candidates") or []
+                    submit_candidates = fallback_candidates or [
+                        {
+                            "selected_slots": preview["selected_slots"],
+                            "selected_spaces": preview.get("selected_spaces", []),
+                            "confirm_order_payload": preview["confirm_order_payload"],
+                            "total_price": preview["total_price"],
+                        }
+                    ]
+                    last_response: dict[str, Any] | None = None
+                    last_message = "Unknown reservation error"
+                    for candidate_index, candidate in enumerate(
+                        submit_candidates, start=1
+                    ):
                         self._log(
                             logging.DEBUG,
-                            "Received payment initialization response.",
+                            "Submitting confirm order request.",
                             **self._job_fields(job),
                             attempt=attempt_count,
                             candidate_index=candidate_index,
-                            order_id=order_id,
-                            payment=payment,
+                            candidate_count=len(submit_candidates),
+                            selected_slots=candidate.get("selected_slots", []),
                         )
-                        message = f"Reservation order created successfully: {order_id}"
-                        self._mark_job(
-                            job,
-                            status="success",
-                            message=message,
-                            order_id=order_id,
-                            payment=payment,
-                            success=True,
+                        response = client.confirm_personal_order(
+                            candidate["confirm_order_payload"]
                         )
-                        self.record_history(
-                            job,
-                            triggered_by,
-                            True,
-                            message,
-                            details={"attempts": attempt_count, "order_id": order_id},
-                        )
-                        notification = self._send_booking_notification(
-                            job,
-                            order_id=order_id,
-                            payment=payment,
-                            preview=successful_preview,
-                        )
-                        return {
-                            "ok": True,
-                            "message": message,
-                            "order_id": order_id,
-                            "payment": payment,
-                            "notification": notification,
-                            "preview": successful_preview,
-                            "attempts": attempt_count,
-                        }
-
-                    last_message = response.get("msg", "Unknown reservation error")
-                    if response.get("code") == 1002:
+                        last_response = response
                         self._log(
-                            logging.WARNING,
-                            "Reservation attempt requires captcha verification.",
+                            logging.DEBUG,
+                            "Received confirm order response.",
                             **self._job_fields(job),
                             attempt=attempt_count,
                             candidate_index=candidate_index,
+                            candidate_count=len(submit_candidates),
                             response=response,
                         )
-                        self._mark_job(job, status="captcha_required", message=last_message)
-                        self.record_history(job, triggered_by, False, last_message, details=response)
-                        return {"ok": False, "message": last_message, "response": response}
+                        if response.get("code") == 0:
+                            successful_preview = dict(preview)
+                            successful_preview["selected_slots"] = candidate.get(
+                                "selected_slots", []
+                            )
+                            successful_preview["selected_spaces"] = candidate.get(
+                                "selected_spaces", []
+                            )
+                            successful_preview["confirm_order_payload"] = candidate[
+                                "confirm_order_payload"
+                            ]
+                            successful_preview["total_price"] = candidate.get(
+                                "total_price", preview.get("total_price")
+                            )
+                            order_id = str(response["data"])
+                            self._log(
+                                logging.INFO,
+                                "Reservation order created; requesting payment initialization.",
+                                **self._job_fields(job),
+                                attempt=attempt_count,
+                                candidate_index=candidate_index,
+                                order_id=order_id,
+                            )
+                            payment = client.create_payment(order_id)
+                            self._log(
+                                logging.DEBUG,
+                                "Received payment initialization response.",
+                                **self._job_fields(job),
+                                attempt=attempt_count,
+                                candidate_index=candidate_index,
+                                order_id=order_id,
+                                payment=payment,
+                            )
+                            message = (
+                                f"Reservation order created successfully: {order_id}"
+                            )
+                            self._mark_job(
+                                job,
+                                status="success",
+                                message=message,
+                                order_id=order_id,
+                                payment=payment,
+                                success=True,
+                            )
+                            self.record_history(
+                                job,
+                                triggered_by,
+                                True,
+                                message,
+                                details={
+                                    "attempts": attempt_count,
+                                    "order_id": order_id,
+                                },
+                            )
+                            notification = self._send_booking_notification(
+                                job,
+                                order_id=order_id,
+                                payment=payment,
+                                preview=successful_preview,
+                            )
+                            return {
+                                "ok": True,
+                                "message": message,
+                                "order_id": order_id,
+                                "payment": payment,
+                                "notification": notification,
+                                "preview": successful_preview,
+                                "attempts": attempt_count,
+                            }
 
-                    if candidate_index < len(submit_candidates):
+                        last_message = response.get("msg", "Unknown reservation error")
+                        if response.get("code") == 1002:
+                            self._log(
+                                logging.WARNING,
+                                "Reservation attempt requires captcha verification.",
+                                **self._job_fields(job),
+                                attempt=attempt_count,
+                                candidate_index=candidate_index,
+                                response=response,
+                            )
+                            self._mark_job(
+                                job, status="captcha_required", message=last_message
+                            )
+                            self.record_history(
+                                job, triggered_by, False, last_message, details=response
+                            )
+                            return {
+                                "ok": False,
+                                "message": last_message,
+                                "response": response,
+                            }
+
+                        if candidate_index < len(submit_candidates):
+                            self._log(
+                                logging.DEBUG,
+                                "Fallback candidate failed; trying next candidate from the same slot snapshot.",
+                                **self._job_fields(job),
+                                attempt=attempt_count,
+                                candidate_index=candidate_index,
+                                error=last_message,
+                            )
+                except SportsAPIError as exc:
+                    message = str(exc)
+                    should_retry = time.time() + retry_sleep_seconds <= deadline
+                    self._log(
+                        logging.WARNING,
+                        "Reservation submit request failed.",
+                        **self._job_fields(job),
+                        attempt=attempt_count,
+                        error=message,
+                        should_retry=should_retry,
+                        retry_sleep_seconds=retry_sleep_seconds if should_retry else 0,
+                    )
+                    if _is_transport_error(message):
+                        client = None
+                    self._mark_job(
+                        job,
+                        status="submit_failed",
+                        message=message,
+                        persist=not should_retry,
+                    )
+                    if should_retry:
                         self._log(
                             logging.DEBUG,
-                            "Fallback candidate failed; trying next candidate from the same slot snapshot.",
+                            "Sleeping before retry after submit request failure.",
                             **self._job_fields(job),
                             attempt=attempt_count,
-                            candidate_index=candidate_index,
-                            error=last_message,
+                            sleep_seconds=retry_sleep_seconds,
                         )
+                        time.sleep(retry_sleep_seconds)
+                        continue
+                    self.record_history(
+                        job,
+                        triggered_by,
+                        False,
+                        message,
+                        details={"attempts": attempt_count},
+                    )
+                    return {"ok": False, "message": message, "attempts": attempt_count}
 
                 message = last_message
                 response = last_response or {}
-                should_retry = time.time() + job.retry_interval_seconds <= deadline
+                should_retry = time.time() + retry_sleep_seconds <= deadline
                 self._log(
                     logging.WARNING,
                     "Reservation submit batch failed.",
@@ -1074,18 +1435,23 @@ class SportsReservationDaemon:
                     response=response,
                     candidate_count=len(submit_candidates),
                     should_retry=should_retry,
-                    retry_sleep_seconds=job.retry_interval_seconds if should_retry else 0,
+                    retry_sleep_seconds=retry_sleep_seconds if should_retry else 0,
                 )
-                self._mark_job(job, status="submit_failed", message=message)
+                self._mark_job(
+                    job,
+                    status="submit_failed",
+                    message=message,
+                    persist=not should_retry,
+                )
                 if should_retry:
                     self._log(
                         logging.DEBUG,
                         "Sleeping before retry after submit failure.",
                         **self._job_fields(job),
                         attempt=attempt_count,
-                        sleep_seconds=job.retry_interval_seconds,
+                        sleep_seconds=retry_sleep_seconds,
                     )
-                    time.sleep(job.retry_interval_seconds)
+                    time.sleep(retry_sleep_seconds)
                     continue
                 self.record_history(job, triggered_by, False, message, details=response)
                 return {"ok": False, "message": message, "response": response}
@@ -1099,7 +1465,11 @@ class SportsReservationDaemon:
         preview: dict[str, Any],
     ) -> dict[str, Any]:
         if not self.notifier:
-            self._log(logging.DEBUG, "Skipping notification because ntfy is not configured.", **self._job_fields(job))
+            self._log(
+                logging.DEBUG,
+                "Skipping notification because ntfy is not configured.",
+                **self._job_fields(job),
+            )
             return {"configured": False, "sent": False}
 
         selected_slots = preview.get("selected_slots", [])
@@ -1136,8 +1506,16 @@ class SportsReservationDaemon:
                 click=payment_url,
             )
         except Exception as exc:  # pragma: no cover - network failure path
-            self._log(logging.WARNING, "Failed to send ntfy notification.", **self._job_fields(job), order_id=order_id, error=str(exc))
-            self.record_history(job, "notification", False, f"ntfy notification failed: {exc}")
+            self._log(
+                logging.WARNING,
+                "Failed to send ntfy notification.",
+                **self._job_fields(job),
+                order_id=order_id,
+                error=str(exc),
+            )
+            self.record_history(
+                job, "notification", False, f"ntfy notification failed: {exc}"
+            )
             return {"configured": True, "sent": False, "error": str(exc)}
 
         details = {"topic": result.topic, "status_code": result.status_code}
@@ -1152,7 +1530,9 @@ class SportsReservationDaemon:
             status_code=result.status_code,
             message_id=result.message_id,
         )
-        self.record_history(job, "notification", True, "ntfy notification sent.", details=details)
+        self.record_history(
+            job, "notification", True, "ntfy notification sent.", details=details
+        )
         return {
             "configured": True,
             "sent": True,
@@ -1163,27 +1543,51 @@ class SportsReservationDaemon:
 
     def run_scheduled_jobs(self) -> None:
         today = _now().date()
-        self._log(logging.INFO, "Running scheduled noon reservation scan.", today=today.isoformat())
+        self._log(
+            logging.INFO,
+            "Running scheduled noon reservation scan.",
+            today=today.isoformat(),
+        )
         for job in self.list_jobs():
             if not job.enabled or job.job_type != JOB_TYPE_TARGET_DATE:
                 continue
             if job.run_on_date:
                 scheduled_date = _parse_date(job.run_on_date)
                 if scheduled_date > today:
-                    self._log(logging.DEBUG, "Skipping target-date job because scheduled noon is still in the future.", **self._job_fields(job))
+                    self._log(
+                        logging.DEBUG,
+                        "Skipping target-date job because scheduled noon is still in the future.",
+                        **self._job_fields(job),
+                    )
                     continue
                 if scheduled_date < today:
                     if job.last_status in {"idle", "waiting_schedule"}:
-                        message = f"Scheduled noon on {job.run_on_date} has already passed."
+                        message = (
+                            f"Scheduled noon on {job.run_on_date} has already passed."
+                        )
                         self._mark_job(job, status="missed_schedule", message=message)
                         self.record_history(job, "schedule", False, message)
-                        self._log(logging.WARNING, "Scheduled noon already passed for target-date job.", **self._job_fields(job))
+                        self._log(
+                            logging.WARNING,
+                            "Scheduled noon already passed for target-date job.",
+                            **self._job_fields(job),
+                        )
                     continue
             try:
-                self._log(logging.INFO, "Dispatching scheduled target-date reservation job.", **self._job_fields(job))
+                self._log(
+                    logging.INFO,
+                    "Dispatching scheduled target-date reservation job.",
+                    **self._job_fields(job),
+                )
                 self.run_job(job.job_id, dry_run=False, triggered_by="schedule")
             except Exception as exc:  # pragma: no cover - defensive logging
-                self.logger.exception(_format_log_message("Scheduled sports job failed.", **self._job_fields(job), error=str(exc)))
+                self.logger.exception(
+                    _format_log_message(
+                        "Scheduled sports job failed.",
+                        **self._job_fields(job),
+                        error=str(exc),
+                    )
+                )
 
 
 def create_dashboard_html() -> str:
@@ -1256,10 +1660,10 @@ select {
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23888' d='M2 4l4 4 4-4'/%3E%3C/svg%3E");
     background-repeat: no-repeat; background-position: right 10px center; padding-right: 28px;
 }
-input[type="checkbox"] { 
-    width: auto; 
+input[type="checkbox"] {
+    width: auto;
     accent-color: var(--accent);
-    -webkit-appearance: auto; 
+    -webkit-appearance: auto;
     appearance: auto;
     padding: 0;
     border: none;
@@ -1441,7 +1845,7 @@ button:hover { opacity: 0.85; }
             </div>
             <div class="field-row" id="retryIntervalRow">
                 <label for="retryInterval">重试间隔 (秒)</label>
-                <input id="retryInterval" type="number" min="0.2" step="0.1" value="1.0">
+                <input id="retryInterval" type="number" min="0.2" step="0.1" value="0.2">
             </div>
         </div>
         <div class="field-row">
@@ -1607,7 +2011,7 @@ async function createJob() {
         preferred_fields: document.getElementById("preferredFields").value,
         time_slots: selectedTimeSlots(),
         retry_window_seconds: Number(document.getElementById("retryWindow").value || 180),
-        retry_interval_seconds: Number(document.getElementById("retryInterval").value || 1.0),
+        retry_interval_seconds: Number(document.getElementById("retryInterval").value || 0.2),
         cron_interval_minutes: Number(document.getElementById("cronIntervalMinutes").value || 10),
         window_start_days: Number(document.getElementById("windowStartDays").value || 0),
         window_end_days: Number(document.getElementById("windowEndDays").value || 7),
@@ -1726,7 +2130,9 @@ def create_app(daemon: SportsReservationDaemon) -> Flask:
 
     @app.route("/")
     def dashboard():
-        return render_template_string(dashboard_html, time_slots=json.dumps(SPORTS_TIME_SLOTS))
+        return render_template_string(
+            dashboard_html, time_slots=json.dumps(SPORTS_TIME_SLOTS)
+        )
 
     @app.route("/api/status")
     def status():
@@ -1820,7 +2226,9 @@ def main() -> None:
         default="127.0.0.1",
         help="Host to listen on (default: 127.0.0.1)",
     )
-    parser.add_argument("-p", "--port", type=int, default=5003, help="Port to listen on (default: 5003)")
+    parser.add_argument(
+        "-p", "--port", type=int, default=5003, help="Port to listen on (default: 5003)"
+    )
     parser.add_argument(
         "--from-browser",
         action="store_true",

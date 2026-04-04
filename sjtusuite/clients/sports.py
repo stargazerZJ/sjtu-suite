@@ -185,6 +185,33 @@ class SportsReservationClient(OAuthClientBase):
                 )
             )
 
+    def export_cookies(self) -> list[dict[str, Any]]:
+        cookies: list[dict[str, Any]] = []
+        for cookie in self.session.cookies:
+            cookies.append(
+                {
+                    "name": cookie.name,
+                    "value": cookie.value,
+                    "domain": cookie.domain,
+                    "path": cookie.path,
+                    "secure": cookie.secure,
+                    "expires": cookie.expires,
+                }
+            )
+        return cookies
+
+    def clone_with_session(self, *, name_suffix: str = "clone") -> "SportsReservationClient":
+        jac_login = JACLogin(self.jac_login.username, self.jac_login.password)
+        clone = SportsReservationClient(
+            jac_login,
+            session_file=self.session.cookies.filename or "sports_client.cookies",
+            name=f"{self.logger.name}-{name_suffix}",
+        )
+        clone.session.headers.clear()
+        clone.session.headers.update(self.session.headers)
+        clone.apply_cookies(self.export_cookies())
+        return clone
+
     def load_playwright_browser_session(
         self,
         *,
