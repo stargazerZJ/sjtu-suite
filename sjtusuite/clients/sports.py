@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import base64
-import json
-import json as json_module
 import secrets
 import string
 import time
@@ -18,7 +16,7 @@ from Crypto.PublicKey import RSA
 from Crypto.Util.Padding import pad
 from requests.cookies import create_cookie
 
-from sjtusuite.auth import JACLogin, OAuthClientBase
+from sjtusuite.auth import InteractiveAuthenticationRequired, JACLogin, OAuthClientBase
 
 
 SPORTS_CLIENT_ID = "mB5nKHqC00MusWAgnqSF"
@@ -141,6 +139,47 @@ def _format_view_str(date_str: str) -> str:
     return f"{dt.month:02d}月{dt.day:02d}日 (周{weekday})"
 
 
+class SportsAuthProvider:
+    """Creates authenticated sports clients for a specific runtime context."""
+
+    def create_client(self) -> "SportsReservationClient":
+        raise NotImplementedError
+
+
+class CredentialsSportsAuthProvider(SportsAuthProvider):
+    """Authenticate sports clients with JAccount credentials."""
+
+    def __init__(
+        self,
+        username: str | None,
+        password: str | None,
+        *,
+        allow_interactive: bool = False,
+        session_file: str = "sports_client.cookies",
+    ):
+        self.username = username or ""
+        self.password = password or ""
+        self.allow_interactive = allow_interactive
+        self.session_file = session_file
+
+    def create_client(self) -> "SportsReservationClient":
+        if not self.username or not self.password:
+            raise SportsAPIError(
+                "Sports authentication needs JAccount username/password in credentials.json or environment."
+            )
+        jac_login = JACLogin(
+            self.username,
+            self.password,
+            allow_interactive=self.allow_interactive,
+        )
+        client = SportsReservationClient(jac_login, session_file=self.session_file)
+        try:
+            client.login()
+        except InteractiveAuthenticationRequired as exc:
+            raise SportsAPIError(str(exc)) from exc
+        return client
+
+
 class SportsReservationClient(OAuthClientBase):
     """Client for the SJTU sports venue reservation system."""
 
@@ -187,7 +226,11 @@ class SportsReservationClient(OAuthClientBase):
         return cookies
 
     def clone_with_session(self, *, name_suffix: str = "clone") -> "SportsReservationClient":
-        jac_login = JACLogin(self.jac_login.username, self.jac_login.password)
+        jac_login = JACLogin(
+            self.jac_login.username,
+            self.jac_login.password,
+            allow_interactive=self.jac_login.allow_interactive,
+        )
         clone = SportsReservationClient(
             jac_login,
             session_file=self.session.cookies.filename or "sports_client.cookies",

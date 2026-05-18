@@ -20,8 +20,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from flask import Flask, jsonify, render_template_string, request
-from sjtusuite.auth import JACLogin
 from sjtusuite.clients.sports import (
+    CredentialsSportsAuthProvider,
     SLOT_SELECTION_MODE_ALL_REQUIRED,
     SLOT_SELECTION_MODE_FIRST_AVAILABLE,
     SPORTS_TIME_SLOTS,
@@ -284,6 +284,11 @@ class SportsReservationDaemon:
     ):
         self.logger = LOGGER
         self.jobs_file = jobs_file
+        self.auth_provider = CredentialsSportsAuthProvider(
+            credentials.username,
+            credentials.password,
+            allow_interactive=False,
+        )
         self.jobs_lock = threading.RLock()
         self.run_lock = threading.Lock()
         self.history = deque(maxlen=100)
@@ -313,6 +318,7 @@ class SportsReservationDaemon:
         self._log(
             logging.INFO,
             "Sports reservation daemon initialized.",
+            auth_mode="credentials",
             jobs_file=self.jobs_file,
             job_count=len(self.jobs),
             log_file=LOG_FILE,
@@ -405,14 +411,9 @@ class SportsReservationDaemon:
         self._log(
             logging.DEBUG,
             "Creating sports reservation client.",
+            auth_mode="credentials",
         )
-        if not credentials.username or not credentials.password:
-            raise SportsAPIError(
-                "Daemon mode needs credentials.json or env credentials."
-            )
-        jac_login = JACLogin(credentials.username, credentials.password)
-        client = SportsReservationClient(jac_login)
-        client.login()
+        client = self.auth_provider.create_client()
         self._log(
             logging.DEBUG, "Sports reservation client login completed with credentials."
         )
@@ -761,6 +762,7 @@ class SportsReservationDaemon:
         if next_run_time:
             next_run = next_run_time.isoformat()
         return {
+            "auth_mode": "credentials",
             "next_run_at": next_run,
             "jobs": [job.to_dict() for job in self.list_jobs()],
             "history": list(self.history)[:30],
@@ -2227,6 +2229,7 @@ def main() -> None:
     dashboard_host = "localhost" if args.host in {"127.0.0.1", "0.0.0.0"} else args.host
     print(f"Starting Sports Reservation Daemon on {args.host}:{args.port}")
     print(f"Dashboard: http://{dashboard_host}:{args.port}/")
+    print("Auth mode: credentials")
     app.run(debug=False, host=args.host, port=args.port, threaded=True)
 
 

@@ -11,8 +11,14 @@ from rich.panel import Panel
 from rich.prompt import Confirm, IntPrompt, Prompt
 from rich.table import Table
 
-from sjtusuite.auth import JACLogin
-from sjtusuite.clients.sports import MotionType, SportsAPIError, SportsReservationClient, VenueDetail, VenueSummary
+from sjtusuite.clients.sports import (
+    CredentialsSportsAuthProvider,
+    MotionType,
+    SportsAPIError,
+    SportsReservationClient,
+    VenueDetail,
+    VenueSummary,
+)
 from sjtusuite.core.credentials import credentials
 
 
@@ -20,14 +26,15 @@ console = Console()
 
 
 def create_client() -> SportsReservationClient:
-    if not credentials.username or not credentials.password:
-        raise click.ClickException(
-            "Missing username/password in credentials.json or environment."
-        )
-    jac_login = JACLogin(credentials.username, credentials.password)
-    client = SportsReservationClient(jac_login)
-    client.login()
-    return client
+    provider = CredentialsSportsAuthProvider(
+        credentials.username,
+        credentials.password,
+        allow_interactive=True,
+    )
+    try:
+        return provider.create_client()
+    except SportsAPIError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 def _render_venues_table(venues: list[VenueSummary], title: str, *, include_index: bool = False):
@@ -317,8 +324,7 @@ def cli(ctx: click.Context):
 @click.option("--search", default="", help="Venue name search string.")
 @click.option("--page-size", default=12, show_default=True, help="Number of rows to fetch.")
 @click.option("--page-num", default=None, type=int, help="Fetch only one pagination page instead of all pages.")
-@click.pass_context
-def venues(ctx: click.Context, search: str, page_size: int, page_num: int | None):
+def venues(search: str, page_size: int, page_num: int | None):
     """List personal-booking venues."""
     client = create_client()
     if page_num is not None:
@@ -340,8 +346,7 @@ def venues(ctx: click.Context, search: str, page_size: int, page_num: int | None
 
 @cli.command()
 @click.argument("venue_id")
-@click.pass_context
-def detail(ctx: click.Context, venue_id: str):
+def detail(venue_id: str):
     """Show venue detail and motion types."""
     client = create_client()
     detail = client.get_venue_detail(venue_id)
@@ -352,8 +357,7 @@ def detail(ctx: click.Context, venue_id: str):
 @cli.command()
 @click.argument("venue_id")
 @click.option("--motion", required=True, help="Motion type ID or exact motion type name.")
-@click.pass_context
-def availability(ctx: click.Context, venue_id: str, motion: str):
+def availability(venue_id: str, motion: str):
     """Show date-level availability and the live selectable slots for each date."""
     client = create_client()
     motion_type = client.resolve_motion_type(venue_id, motion)
@@ -370,9 +374,7 @@ def availability(ctx: click.Context, venue_id: str, motion: str):
 @click.option("--submit", is_flag=True, help="Actually create the order instead of only previewing it.")
 @click.option("--captcha-verification", default=None, help="Optional captcha verification string when the API requires it.")
 @click.option("--create-payment", is_flag=True, help="After successful submit, request the payment URL.")
-@click.pass_context
 def reserve(
-    ctx: click.Context,
     venue_id: str,
     motion: str,
     date_str: str,

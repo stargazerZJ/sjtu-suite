@@ -25,7 +25,7 @@ logging.basicConfig(filename='checkin_access.log', level=logging.INFO)
 CORS(app)
 
 # Initialize JACLogin and CheckinClient
-jac_login = JACLogin(credentials.username, credentials.password)
+jac_login = JACLogin(credentials.username, credentials.password, allow_interactive=False)
 checkin_client = CheckinClient(jac_login)
 notification_client = DaemonNotificationClient.from_config(
     "checkin",

@@ -22,7 +22,7 @@ app = Flask(__name__)
 logging.basicConfig(filename='door_access.log', level=logging.INFO)
 
 # Initialize DoorClient and JACLogin
-jac_login = JACLogin(credentials.username, credentials.password)
+jac_login = JACLogin(credentials.username, credentials.password, allow_interactive=False)
 if not credentials.room_id:
     logger = logging.getLogger('door_server')
     logger.error("Room ID is not configured in credentials.")

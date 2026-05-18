@@ -13,7 +13,6 @@ dependencies = [
     "requests>=2.32.4",
     "rich>=13.0.0",
     "tzdata>=2025.2",
-    "websocket-client>=1.8.0",
 ]
 
 [project.scripts]

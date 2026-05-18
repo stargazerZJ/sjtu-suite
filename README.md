@@ -288,7 +288,7 @@ sjtu-sportsd --host 0.0.0.0 -p 5003
 # open http://<server-ip>:5003/ from another device on the same network
 ```
 
-By default the daemon binds to `127.0.0.1` and uses `credentials.json` for long-running login refresh. In `target_date` mode, new dashboard jobs default to the first upcoming noon, but you can override the exact run date if you want a later `12:00` trigger. Use `--host` if you want a different bind address.
+By default the daemon binds to `127.0.0.1` and uses `credentials.json` for long-running login refresh. Daemon authentication is non-interactive: if JAccount requires two-step verification or manual captcha entry, the daemon reports a clear authentication error instead of waiting for terminal input. In `target_date` mode, new dashboard jobs default to the first upcoming noon, but you can override the exact run date if you want a later `12:00` trigger. Use `--host` if you want a different bind address.
 
 ## Environment
 

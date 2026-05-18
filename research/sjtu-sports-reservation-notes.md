@@ -261,7 +261,6 @@ Used by `/orderDetails/:type` to render:
 ## Implementation notes
 
 - `GET /system/user/currentUser` is not a safe unauthenticated validator by itself. Without a real logged-in browser context, it can still return `{"msg":"操作成功","code":0}` while omitting the `data` object.
-- When reusing the managed Playwright browser session, protected sports APIs are most reliable when called from the browser context itself instead of replaying the browser cookie through plain `requests`.
 - A real end-to-end test on 2026-03-29 successfully created one unpaid personal order and initialized payment with:
   - `POST /venue/personal/ConfirmOrder`
   - `GET /venue/personal/queryOrder?orderId=:orderId`

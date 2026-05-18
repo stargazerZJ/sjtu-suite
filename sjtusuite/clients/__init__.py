@@ -5,5 +5,10 @@ from .video import VideoClient
 from .canvas import CanvasClient
 from .checkin import CheckinClient
 from .library import LibrarySeatClient, LibrarySeatAdvancedClient
-from .sports import SportsReservationClient, SportsAPIError
+from .sports import (
+    CredentialsSportsAuthProvider,
+    SportsAPIError,
+    SportsAuthProvider,
+    SportsReservationClient,
+)
 from .questionnaire import QuestionnaireClient, QuestionnaireAPIError

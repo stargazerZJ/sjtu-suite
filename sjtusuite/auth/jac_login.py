@@ -9,6 +9,18 @@ from sjtusuite.core.config import get_password_file
 from .oauth_base import OAuthClientBase
 
 
+class InteractiveAuthenticationRequired(RuntimeError):
+    """Raised when login needs user input but interactive auth is disabled."""
+
+
+class TwoFactorAuthenticationRequired(InteractiveAuthenticationRequired):
+    """Raised when JAccount requires 2FA in a non-interactive auth flow."""
+
+
+class CaptchaRequired(InteractiveAuthenticationRequired):
+    """Raised when captcha solving needs manual input in a non-interactive auth flow."""
+
+
 def extract_auth_params(auth_url):
     """Extract params from the authorization URL."""
     parsed_url = urlparse(auth_url)
@@ -17,9 +29,17 @@ def extract_auth_params(auth_url):
 
 
 class JACLogin(OAuthClientBase):
-    def __init__(self, username, password, session_file="jac_login.cookies"):
+    def __init__(
+        self,
+        username,
+        password,
+        session_file="jac_login.cookies",
+        *,
+        allow_interactive: bool = True,
+    ):
         self.username = username
         self.password = password
+        self.allow_interactive = allow_interactive
         self.login_base_url = "https://jaccount.sjtu.edu.cn"
         super().__init__("JACLogin", session_file)
 
@@ -163,13 +183,18 @@ class JACLogin(OAuthClientBase):
 
     def handle_2fa(self, login_page):
         self.logger.info("Two-Step Verification required.")
-        
+
         match = re.search(r"account:\s*'([^']+)'", login_page.text)
         if match:
             account = match.group(1)
         else:
             self.logger.warning("Could not extract account from 2FA page, using configured username.")
             account = self.username
+
+        if not self.allow_interactive:
+            raise TwoFactorAuthenticationRequired(
+                "JAccount requires two-step verification. Run an interactive login to refresh the saved session."
+            )
 
         print("Select 2FA method:")
         print("1. My SJTU App (app)")
@@ -289,6 +314,10 @@ class JACLogin(OAuthClientBase):
             )
             return r.json()["result"]
         except Exception as e:
+            if not self.allow_interactive:
+                raise CaptchaRequired(
+                    "JAccount captcha solver failed and manual captcha entry is disabled for this auth flow."
+                ) from e
             with open("captcha.jpg", "wb") as f:
                 f.write(image)
             return input("Please solve the captcha and enter the result: ")
