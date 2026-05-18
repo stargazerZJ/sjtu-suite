@@ -160,12 +160,13 @@ sjtu-suite/
 │   │   ├── questionnaire.py # Questionnaire service
 │   │   └── library/      # Library seat reservation
 │   ├── core/             # Utilities (logging, config)
+│   ├── data/             # Packaged data used by clients
 │   ├── notifications/    # Reusable notification integrations
 │   └── servers/          # Flask server utilities
 ├── daemons/              # Long-running services
 │   ├── door_server.py
 │   └── checkin_server.py
-├── data/                 # Runtime data (cookies, logs)
+├── data/                 # Runtime data (cookies, logs, daemon state)
 └── credentials.json      # User credentials (gitignored)
 ```
 

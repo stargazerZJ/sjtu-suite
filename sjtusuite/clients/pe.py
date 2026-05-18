@@ -2,11 +2,11 @@ import random
 import math
 import json
 import uuid
-import os
+from importlib import resources
 from enum import Enum
 from sjtusuite.auth import OAuthClientBase, JACLogin
 from sjtusuite.core.config import get_project_root
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 from time import sleep
 from pathlib import Path
 
@@ -181,14 +181,20 @@ class PEClient(OAuthClientBase):
         return response
 
     def load_points_data(self, points_file="data/points.json"):
-        """Load points data from JSON file"""
+        """Load points data from a custom path or packaged fallback."""
         try:
-            # Use project root instead of script directory
-            file_path = get_project_root() / points_file
-            
-            with open(file_path, "r") as f:
-                points_data = json.load(f)
-            
+            file_path = Path(points_file)
+            if not file_path.is_absolute():
+                file_path = get_project_root() / file_path
+
+            if file_path.exists():
+                with file_path.open("r", encoding="utf-8") as f:
+                    points_data = json.load(f)
+            else:
+                data_file = resources.files("sjtusuite.data").joinpath("points.json")
+                with data_file.open("r", encoding="utf-8") as f:
+                    points_data = json.load(f)
+
             self.logger.info(f"Loaded {len(points_data)} points from {points_file}")
             return points_data
         except Exception as e:

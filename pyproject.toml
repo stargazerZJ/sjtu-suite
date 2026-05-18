@@ -31,3 +31,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["sjtusuite", "daemons"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"sjtusuite/data/points.json" = "sjtusuite/data/points.json"
