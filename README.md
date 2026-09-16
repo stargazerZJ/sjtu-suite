@@ -113,13 +113,11 @@ sjtu-pe status                 # Check login status
 sjtu-sports                              # Interactive venue -> motion -> date -> slot picker
 sjtu-sports venues                       # Fetch all venue pages by default
 sjtu-sports venues --page-num 2          # Inspect a single page when needed
-sjtu-sports --from-browser venues         # Reuse the current Playwright browser login
 sjtu-sports availability <venue_id> --motion 乒乓球
 sjtu-sports reserve <venue_id> --motion 乒乓球 --date 2026-03-29 --field 场地10 --time 19:00-20:00
 
 # Sports reservation daemon dashboard
 sjtu-sportsd
-sjtu-sportsd --from-browser               # Test the daemon against the current Playwright browser login
 sjtu-sportsd --host 0.0.0.0 -p 5003      # Expose the dashboard on all network interfaces
 ```
 
@@ -159,6 +157,7 @@ sjtu-suite/
 │   │   ├── video.py      # Video download
 │   │   ├── canvas.py     # Canvas LMS
 │   │   ├── sports.py     # Sports reservation
+│   │   ├── questionnaire.py # Questionnaire service
 │   │   └── library/      # Library seat reservation
 │   ├── core/             # Utilities (logging, config)
 │   ├── notifications/    # Reusable notification integrations
@@ -181,6 +180,7 @@ sjtu-suite/
 | `CanvasClient` | Access Canvas LMS courses and tools |
 | `LibrarySeatClient` | Reserve and manage library seats |
 | `SportsReservationClient` | Discover, preview, and submit sports venue reservations |
+| `QuestionnaireClient` | List questionnaires and fetch submissions from wj.sjtu.edu.cn |
 
 ## API Examples
 
@@ -254,11 +254,29 @@ preview = sports.preview_personal_order(
 )
 ```
 
-If you have already logged in through the managed Playwright browser, the sports CLI can reuse that authenticated browser session instead of `credentials.json`:
+### Questionnaire Service
 
-```bash
-sjtu-sports --from-browser detail <venue_id>
-sjtu-sports --from-browser reserve <venue_id> --motion 乒乓球 --date 2026-03-30 --field 场地2 --time 12:00-13:00
+```python
+from sjtusuite.clients import QuestionnaireClient
+from sjtusuite import JACLogin
+
+jac = JACLogin("user", "pass")
+wj = QuestionnaireClient(jac)
+wj.login()
+
+for q in wj.list_questionnaires(include_archived=False):
+    print(q.questionnaire_id, q.name)
+
+# All submissions of one questionnaire (auto-paginated), answers keyed by question title
+sheets = wj.list_submissions(117406)
+for sheet in sheets:
+    print(sheet.user_name, sheet.finish_at, sheet.answers)
+
+# Or page through the raw table rows yourself
+rows, total = wj.list_submission_rows(117406, page=1, page_size=20)
+
+# Full detail of a single submission (answersheet id from a row/sheet)
+detail = wj.get_submission(sheets[0].answersheet_id)
 ```
 
 The daemon exposes a web dashboard where you can create reservation jobs, inspect recent attempts, and manually trigger a dry run or a real booking attempt:
@@ -270,7 +288,7 @@ sjtu-sportsd --host 0.0.0.0 -p 5003
 # open http://<server-ip>:5003/ from another device on the same network
 ```
 
-By default the daemon binds to `127.0.0.1` and uses `credentials.json` for long-running login refresh. In `target_date` mode, new dashboard jobs default to the first upcoming noon, but you can override the exact run date if you want a later `12:00` trigger. Use `--host` if you want a different bind address, and `sjtu-sportsd --from-browser` for live testing while the managed Playwright browser is logged in.
+By default the daemon binds to `127.0.0.1` and uses `credentials.json` for long-running login refresh. In `target_date` mode, new dashboard jobs default to the first upcoming noon, but you can override the exact run date if you want a later `12:00` trigger. Use `--host` if you want a different bind address.
 
 ## Environment
 

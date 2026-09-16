@@ -5,7 +5,6 @@ import json
 import json as json_module
 import secrets
 import string
-import subprocess
 import time
 import uuid
 from dataclasses import asdict, dataclass
@@ -18,7 +17,6 @@ from Crypto.Cipher import AES, PKCS1_v1_5
 from Crypto.PublicKey import RSA
 from Crypto.Util.Padding import pad
 from requests.cookies import create_cookie
-from websocket import create_connection
 
 from sjtusuite.auth import JACLogin, OAuthClientBase
 
@@ -37,17 +35,6 @@ SPORTS_REQUEST_TIMEOUT_SECONDS = 5.0
 
 class SportsAPIError(RuntimeError):
     """Raised when the sports reservation API returns an unexpected result."""
-
-
-@dataclass(slots=True)
-class BrowserFetchResponse:
-    status_code: int
-    headers: dict[str, str]
-    text: str
-    url: str
-
-    def json(self) -> dict[str, Any]:
-        return json.loads(self.text)
 
 
 @dataclass(slots=True, frozen=True)
@@ -167,7 +154,6 @@ class SportsReservationClient(OAuthClientBase):
         self.base_url = "https://sports.sjtu.edu.cn"
         self.redirect_url = f"{self.base_url}/oauth2Login"
         self.jac_login = jac_login
-        self._browser_page_ws_url: str | None = None
         self.session.headers.update({"Referer": f"{self.base_url}/pc/"})
 
     def apply_cookies(self, cookies: Iterable[dict[str, Any]]) -> None:
@@ -212,123 +198,6 @@ class SportsReservationClient(OAuthClientBase):
         clone.apply_cookies(self.export_cookies())
         return clone
 
-    def load_playwright_browser_session(
-        self,
-        *,
-        debugger_port: int | None = None,
-        require_login: bool = True,
-    ) -> None:
-        page_target = self.fetch_playwright_browser_target(debugger_port=debugger_port)
-        self._browser_page_ws_url = page_target["webSocketDebuggerUrl"]
-        cookies = self.fetch_playwright_browser_cookies(debugger_port=debugger_port)
-        self.apply_cookies(cookies)
-        if require_login and not self.validate_session():
-            raise SportsAPIError(
-                "The Playwright browser is not logged in to the sports site. Please log in with 校内人员登录 and retry."
-            )
-
-    @classmethod
-    def detect_playwright_debugger_port(cls) -> int:
-        result = subprocess.run(
-            ["ps", "-axo", "command"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        matches: list[int] = []
-        for line in result.stdout.splitlines():
-            if "--user-data-dir=/Users/theunknownthing/Library/Caches/ms-playwright/mcp-chrome" not in line:
-                continue
-            marker = "--remote-debugging-port="
-            if marker not in line:
-                continue
-            port_text = line.split(marker, 1)[1].split()[0]
-            if port_text.isdigit():
-                matches.append(int(port_text))
-        if not matches:
-            raise SportsAPIError(
-                "No running Playwright Chrome session was found. Start the browser with the sports site open and try again."
-            )
-        return matches[-1]
-
-    @classmethod
-    def fetch_playwright_browser_target(
-        cls,
-        *,
-        debugger_port: int | None = None,
-    ) -> dict[str, Any]:
-        port = debugger_port or cls.detect_playwright_debugger_port()
-        targets = requests.get(
-            f"http://127.0.0.1:{port}/json/list",
-            timeout=5,
-        ).json()
-        page_target = next(
-            (
-                target
-                for target in targets
-                if target.get("type") == "page"
-                and "webSocketDebuggerUrl" in target
-                and (
-                    target.get("url", "").startswith("https://sports.sjtu.edu.cn")
-                    or target.get("title") == "上海交通大学体育场馆预约平台"
-                )
-            ),
-            None,
-        )
-        if not page_target:
-            page_target = next(
-                (
-                    target
-                    for target in targets
-                    if target.get("type") == "page" and "webSocketDebuggerUrl" in target
-                ),
-                None,
-            )
-        if not page_target:
-            raise SportsAPIError(
-                "Could not find a debuggable Playwright page target. Open the sports site in the managed browser and retry."
-            )
-        return page_target
-
-    @classmethod
-    def fetch_playwright_browser_cookies(
-        cls,
-        *,
-        debugger_port: int | None = None,
-    ) -> list[dict[str, Any]]:
-        page_target = cls.fetch_playwright_browser_target(debugger_port=debugger_port)
-        ws = create_connection(page_target["webSocketDebuggerUrl"], suppress_origin=True, timeout=5)
-        try:
-            request_id = 1
-            ws.send(json.dumps({"id": request_id, "method": "Network.enable", "params": {}}))
-            while True:
-                message = json.loads(ws.recv())
-                if message.get("id") == request_id:
-                    break
-
-            request_id += 1
-            ws.send(
-                json.dumps(
-                    {
-                        "id": request_id,
-                        "method": "Network.getCookies",
-                        "params": {
-                            "urls": [
-                                "https://sports.sjtu.edu.cn/",
-                                "https://sports.sjtu.edu.cn/pc/",
-                            ]
-                        },
-                    }
-                )
-            )
-            while True:
-                message = json.loads(ws.recv())
-                if message.get("id") == request_id:
-                    return message.get("result", {}).get("cookies", [])
-        finally:
-            ws.close()
-        return []
-
     def validate_session(self) -> bool:
         response = self._request(
             "GET",
@@ -370,15 +239,6 @@ class SportsReservationClient(OAuthClientBase):
         allow_redirects: bool = False,
         **kwargs,
     ):
-        if self._browser_page_ws_url and not path.startswith(self.jac_base_url):
-            json_body = kwargs.pop("json", None)
-            return self._browser_request(
-                method,
-                path,
-                allow_redirects=allow_redirects,
-                json_body=json_body,
-                **kwargs,
-            )
         url = path if path.startswith("http") else f"{self.base_url}{path}"
         request_timeout = kwargs.pop("timeout", SPORTS_REQUEST_TIMEOUT_SECONDS)
         try:
@@ -401,93 +261,6 @@ class SportsReservationClient(OAuthClientBase):
                 **kwargs,
             )
         return response
-
-    def _browser_request(
-        self,
-        method: str,
-        path: str,
-        *,
-        allow_redirects: bool = False,
-        headers: dict[str, str] | None = None,
-        data: str | bytes | None = None,
-        json_body: dict[str, Any] | list[Any] | None = None,
-        **_: Any,
-    ) -> BrowserFetchResponse:
-        if not self._browser_page_ws_url:
-            raise SportsAPIError("Browser transport is not initialized.")
-
-        url = path if path.startswith("http") else f"{self.base_url}{path}"
-        request_headers = dict(headers or {})
-        body: str | None = None
-        if json_body is not None:
-            body = json_module.dumps(json_body, ensure_ascii=False, separators=(",", ":"))
-            request_headers.setdefault("Content-Type", "application/json")
-        elif data is not None:
-            body = data.decode("utf-8") if isinstance(data, bytes) else data
-
-        fetch_options: dict[str, Any] = {
-            "method": method,
-            "headers": request_headers,
-            "redirect": "follow" if allow_redirects else "follow",
-        }
-        if body is not None:
-            fetch_options["body"] = body
-
-        script = """
-            (async () => {
-              const response = await fetch(URL_VALUE, OPTIONS_VALUE);
-              return {
-                status: response.status,
-                url: response.url,
-                headers: Object.fromEntries(response.headers.entries()),
-                text: await response.text(),
-              };
-            })()
-        """.replace("URL_VALUE", json_module.dumps(url)).replace(
-            "OPTIONS_VALUE",
-            json_module.dumps(fetch_options, ensure_ascii=False),
-        )
-
-        ws = create_connection(self._browser_page_ws_url, suppress_origin=True, timeout=5)
-        try:
-            request_id = 1
-            ws.send(json.dumps({"id": request_id, "method": "Runtime.enable", "params": {}}))
-            while True:
-                message = json.loads(ws.recv())
-                if message.get("id") == request_id:
-                    break
-
-            request_id += 1
-            ws.send(
-                json.dumps(
-                    {
-                        "id": request_id,
-                        "method": "Runtime.evaluate",
-                        "params": {
-                            "expression": script,
-                            "awaitPromise": True,
-                            "returnByValue": True,
-                        },
-                    }
-                )
-            )
-            while True:
-                message = json.loads(ws.recv())
-                if message.get("id") != request_id:
-                    continue
-                if "exceptionDetails" in message:
-                    raise SportsAPIError(
-                        f"Browser fetch failed for {path}: {message['exceptionDetails'].get('text', 'unknown error')}"
-                    )
-                value = message.get("result", {}).get("result", {}).get("value", {})
-                return BrowserFetchResponse(
-                    status_code=int(value.get("status", 0)),
-                    headers=value.get("headers", {}),
-                    text=value.get("text", ""),
-                    url=value.get("url", url),
-                )
-        finally:
-            ws.close()
 
     def _json_request(self, method: str, path: str, **kwargs) -> dict[str, Any]:
         response = self._request(method, path, **kwargs)

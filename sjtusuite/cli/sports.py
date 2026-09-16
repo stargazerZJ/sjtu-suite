@@ -19,20 +19,13 @@ from sjtusuite.core.credentials import credentials
 console = Console()
 
 
-def create_client(from_browser: bool = False) -> SportsReservationClient:
-    jac_login = JACLogin(credentials.username or "", credentials.password or "")
-    client = SportsReservationClient(jac_login)
-    if from_browser:
-        try:
-            client.load_playwright_browser_session()
-        except SportsAPIError as exc:
-            raise click.ClickException(str(exc)) from exc
-        return client
+def create_client() -> SportsReservationClient:
     if not credentials.username or not credentials.password:
         raise click.ClickException(
-            "Missing username/password in credentials.json or environment. "
-            "Use --from-browser after logging in to the Playwright browser if you want to borrow that session."
+            "Missing username/password in credentials.json or environment."
         )
+    jac_login = JACLogin(credentials.username, credentials.password)
+    client = SportsReservationClient(jac_login)
     client.login()
     return client
 
@@ -196,8 +189,8 @@ def _build_preview_from_exact_slots(
     }
 
 
-def _interactive_flow(from_browser: bool):
-    client = create_client(from_browser=from_browser)
+def _interactive_flow():
+    client = create_client()
     console.print(
         Panel.fit(
             "[bold blue]SJTU Sports Interactive[/bold blue]\n"
@@ -312,18 +305,12 @@ def _interactive_flow(from_browser: bool):
 
 
 @click.group(invoke_without_command=True)
-@click.option(
-    "--from-browser",
-    is_flag=True,
-    help="Use the current Playwright browser session instead of credentials.json.",
-)
 @click.pass_context
-def cli(ctx: click.Context, from_browser: bool):
+def cli(ctx: click.Context):
     """SJTU sports reservation tools."""
     ctx.ensure_object(dict)
-    ctx.obj["from_browser"] = from_browser
     if ctx.invoked_subcommand is None:
-        _interactive_flow(from_browser=from_browser)
+        _interactive_flow()
 
 
 @cli.command()
@@ -333,7 +320,7 @@ def cli(ctx: click.Context, from_browser: bool):
 @click.pass_context
 def venues(ctx: click.Context, search: str, page_size: int, page_num: int | None):
     """List personal-booking venues."""
-    client = create_client(from_browser=ctx.obj["from_browser"])
+    client = create_client()
     if page_num is not None:
         venues, total = client.list_venues(page_num=page_num, page_size=page_size, venue_name=search)
         title = f"Sports venues (page {page_num}, total: {total})"
@@ -356,7 +343,7 @@ def venues(ctx: click.Context, search: str, page_size: int, page_num: int | None
 @click.pass_context
 def detail(ctx: click.Context, venue_id: str):
     """Show venue detail and motion types."""
-    client = create_client(from_browser=ctx.obj["from_browser"])
+    client = create_client()
     detail = client.get_venue_detail(venue_id)
     _render_venue_detail(detail)
     _render_motion_types(detail)
@@ -368,7 +355,7 @@ def detail(ctx: click.Context, venue_id: str):
 @click.pass_context
 def availability(ctx: click.Context, venue_id: str, motion: str):
     """Show date-level availability and the live selectable slots for each date."""
-    client = create_client(from_browser=ctx.obj["from_browser"])
+    client = create_client()
     motion_type = client.resolve_motion_type(venue_id, motion)
     selectable_by_date = _collect_availability_rows(client, venue_id, motion_type)
     _render_availability_tables(motion_type.name, selectable_by_date)
@@ -396,7 +383,7 @@ def reserve(
     create_payment: bool,
 ):
     """Preview or submit a personal sports reservation."""
-    client = create_client(from_browser=ctx.obj["from_browser"])
+    client = create_client()
 
     try:
         preview = client.preview_personal_order(

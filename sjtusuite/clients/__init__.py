@@ -6,3 +6,4 @@ from .canvas import CanvasClient
 from .checkin import CheckinClient
 from .library import LibrarySeatClient, LibrarySeatAdvancedClient
 from .sports import SportsReservationClient, SportsAPIError
+from .questionnaire import QuestionnaireClient, QuestionnaireAPIError

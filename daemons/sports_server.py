@@ -280,11 +280,9 @@ class SportsReservationDaemon:
     def __init__(
         self,
         *,
-        use_browser_session: bool = False,
         jobs_file: Path = JOBS_FILE,
     ):
         self.logger = LOGGER
-        self.use_browser_session = use_browser_session
         self.jobs_file = jobs_file
         self.jobs_lock = threading.RLock()
         self.run_lock = threading.Lock()
@@ -315,7 +313,6 @@ class SportsReservationDaemon:
         self._log(
             logging.INFO,
             "Sports reservation daemon initialized.",
-            auth_mode="browser" if self.use_browser_session else "credentials",
             jobs_file=self.jobs_file,
             job_count=len(self.jobs),
             log_file=LOG_FILE,
@@ -408,20 +405,13 @@ class SportsReservationDaemon:
         self._log(
             logging.DEBUG,
             "Creating sports reservation client.",
-            auth_mode="browser" if self.use_browser_session else "credentials",
         )
-        jac_login = JACLogin(credentials.username or "", credentials.password or "")
-        client = SportsReservationClient(jac_login)
-        if self.use_browser_session:
-            client.load_playwright_browser_session()
-            self._log(
-                logging.DEBUG, "Sports reservation client ready using browser session."
-            )
-            return client
         if not credentials.username or not credentials.password:
             raise SportsAPIError(
-                "Daemon mode needs credentials.json or env credentials unless it is started with --from-browser."
+                "Daemon mode needs credentials.json or env credentials."
             )
+        jac_login = JACLogin(credentials.username, credentials.password)
+        client = SportsReservationClient(jac_login)
         client.login()
         self._log(
             logging.DEBUG, "Sports reservation client login completed with credentials."
@@ -771,7 +761,6 @@ class SportsReservationDaemon:
         if next_run_time:
             next_run = next_run_time.isoformat()
         return {
-            "auth_mode": "browser" if self.use_browser_session else "credentials",
             "next_run_at": next_run,
             "jobs": [job.to_dict() for job in self.list_jobs()],
             "history": list(self.history)[:30],
@@ -2229,21 +2218,15 @@ def main() -> None:
     parser.add_argument(
         "-p", "--port", type=int, default=5003, help="Port to listen on (default: 5003)"
     )
-    parser.add_argument(
-        "--from-browser",
-        action="store_true",
-        help="Reuse the current Playwright browser session instead of credentials.json.",
-    )
     args = parser.parse_args()
 
-    daemon = SportsReservationDaemon(use_browser_session=args.from_browser)
+    daemon = SportsReservationDaemon()
     daemon.start()
 
     app = create_app(daemon)
     dashboard_host = "localhost" if args.host in {"127.0.0.1", "0.0.0.0"} else args.host
     print(f"Starting Sports Reservation Daemon on {args.host}:{args.port}")
     print(f"Dashboard: http://{dashboard_host}:{args.port}/")
-    print(f"Auth mode: {'browser' if args.from_browser else 'credentials'}")
     app.run(debug=False, host=args.host, port=args.port, threaded=True)
 
 
