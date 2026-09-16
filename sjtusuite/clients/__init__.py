@@ -12,3 +12,4 @@ from .sports import (
     SportsReservationClient,
 )
 from .questionnaire import QuestionnaireClient, QuestionnaireAPIError
+from .mail import MailClient, MailError, MailSummary

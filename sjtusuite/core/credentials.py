@@ -126,5 +126,37 @@ class CredentialProvider:
             "priority": self._resolve_value(ntfy.get("priority")),
         }
 
+    @property
+    def mail_config(self) -> dict[str, Any]:
+        """Get mail (SMTP) notification settings for daemon reuse.
+
+        Credentials default to the shared JAccount username/password when the
+        block does not carry its own `username` / `password`.
+        """
+        notifications = self.get("notifications", {})
+        if not isinstance(notifications, dict):
+            return {}
+        mail = notifications.get("mail", {})
+        if not isinstance(mail, dict):
+            return {}
+
+        raw_to = self._resolve_value(mail.get("to", mail.get("recipients", [])))
+        if isinstance(raw_to, str):
+            recipients = [item.strip() for item in raw_to.split(",") if item.strip()]
+        elif isinstance(raw_to, list):
+            recipients = [str(item).strip() for item in raw_to if str(item).strip()]
+        else:
+            recipients = []
+
+        return {
+            "enabled": bool(mail.get("enabled", True)),
+            "to": recipients,
+            "from": self._resolve_value(mail.get("from")),
+            "subject_prefix": self._resolve_value(mail.get("subject_prefix")),
+            "host": str(self._resolve_value(mail.get("host", "mail.sjtu.edu.cn")) or "mail.sjtu.edu.cn"),
+            "username": self._resolve_value(mail.get("username")),
+            "password": self._resolve_secret_block(mail.get("password"), label="Mail password"),
+        }
+
 # Singleton instance
 credentials = CredentialProvider()

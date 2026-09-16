@@ -24,6 +24,7 @@ sjtu-sportsd = "daemons.sports_server:main"
 sjtu-pe = "sjtusuite.cli.pe:main"
 sjtu-sports = "sjtusuite.cli.sports:main"
 sjtu-video = "sjtusuite.cli.video:main"
+sjtu-mail = "sjtusuite.cli.mail:main"
 
 [build-system]
 requires = ["hatchling"]

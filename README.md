@@ -65,6 +65,8 @@ If you prefer to store the password directly in the file (not recommended), use:
 
 Door auth-failure notifications are rate-limited to at most one push per source IP per minute to avoid alert storms.
 
+`notifications.mail` is also optional and enables SMTP mail notifications via `mail.sjtu.edu.cn` (see below). It reuses the JAccount credentials by default, so a minimal block is just `"to": ["your_name@sjtu.edu.cn"]`.
+
 ## Quick Start
 
 ### As a Python Library
@@ -119,6 +121,15 @@ sjtu-sports reserve <venue_id> --motion 乒乓球 --date 2026-03-29 --field 场�
 # Sports reservation daemon dashboard
 sjtu-sportsd
 sjtu-sportsd --host 0.0.0.0 -p 5003      # Expose the dashboard on all network interfaces
+
+# University mailbox (mail.sjtu.edu.cn, IMAP/SMTP)
+sjtu-mail folders                          # Folder list with unread counts
+sjtu-mail list -n 20                       # Newest messages in INBOX
+sjtu-mail list --folder Sent --unread      # Unread messages in another folder
+sjtu-mail read 2046 --mark-read            # Read a message (and mark it seen)
+sjtu-mail mark 2046 --unread               # Mark read/unread
+sjtu-mail send -t name@sjtu.edu.cn -s "Hi" -b "Body"
+sjtu-mail test                             # Send a self-test mail
 ```
 
 The sports daemon supports two job modes:
@@ -158,6 +169,7 @@ sjtu-suite/
 │   │   ├── canvas.py     # Canvas LMS
 │   │   ├── sports.py     # Sports reservation
 │   │   ├── questionnaire.py # Questionnaire service
+│   │   ├── mail.py       # University mailbox (IMAP/SMTP)
 │   │   └── library/      # Library seat reservation
 │   ├── core/             # Utilities (logging, config)
 │   ├── data/             # Packaged data used by clients
@@ -182,6 +194,7 @@ sjtu-suite/
 | `LibrarySeatClient` | Reserve and manage library seats |
 | `SportsReservationClient` | Discover, preview, and submit sports venue reservations |
 | `QuestionnaireClient` | List questionnaires and fetch submissions from wj.sjtu.edu.cn |
+| `MailClient` | Read and send mail on mail.sjtu.edu.cn via IMAP/SMTP |
 
 ## API Examples
 
@@ -254,6 +267,34 @@ preview = sports.preview_personal_order(
     time_slots=["19:00-20:00"],
 )
 ```
+
+### University Mail
+
+```python
+from sjtusuite.clients import MailClient
+from sjtusuite import JACLogin  # mail uses the same credentials directly
+
+mail = MailClient("user", "pass")  # same JAccount credentials as everywhere else
+
+# Read
+mail.list_folders()
+mail.unread_count()                      # INBOX unread
+mail.list_messages(limit=20)             # newest-first envelopes
+body = mail.get_body(uid)                # full text of one message
+mail.mark_read(uid)                      # flag management
+
+# Send
+mail.send(to="someone@sjtu.edu.cn", subject="Hi", body="...")
+
+# As a notification channel (best-effort, never raises)
+from sjtusuite.notifications import MailNotifier
+
+notifier = MailNotifier(MailClient("user", "pass"), to="me@sjtu.edu.cn")
+result = notifier.send("Reservation confirmed", subject="Sports booked")
+```
+
+The `notifications.mail` config block in `credentials.json` builds the same
+notifier from configuration for daemon reuse.
 
 ### Questionnaire Service
 
