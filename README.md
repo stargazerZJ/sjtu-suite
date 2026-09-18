@@ -151,6 +151,15 @@ sjtu-sportsd -p 5003
 sjtu-sportsd --host 0.0.0.0 -p 5003
 ```
 
+## Agent Skills
+
+This repository ships Claude Code skills under `.claude/skills/`:
+
+- `sjtu-suite` — how to *use* the suite (CLIs, Python API, daemon REST APIs), with per-component reference files under `references/`
+- `sjtu-suite-dev` — how to *develop* on the codebase (architecture, conventions, how to add a client or daemon)
+
+Point any coding agent at this repo and it can pick these up automatically.
+
 ## Project Structure
 
 ```
