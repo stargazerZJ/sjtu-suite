@@ -55,17 +55,10 @@ sjtusuite/                  # installable library package
 daemons/                    # long-running Flask services
 ├── door_server.py          # sjtu-door   (port 5000)
 ├── checkin_server.py       # sjtu-checkin (port 5002)
-├── sports_server.py        # shim -> daemons/sports/
-└── sports/                 # the sports daemon, split by concern
-    ├── main.py             # argparse entrypoint
-    ├── app.py              # Flask routes (dashboard REST API)
-    ├── daemon.py           # SportsReservationDaemon (scheduler container)
-    ├── job_management.py   # CRUD + persistence for ReservationJob
-    ├── booking.py          # run_job / warmup / noon execution
-    ├── catalog.py          # venue/availability API for the dashboard
-    ├── models.py           # ReservationJob dataclass (+ from/to_dict)
-    ├── dashboard.py        # inline HTML template
-    └── constants.py        # ports, paths, job types, timing constants
+└── sports_server.py        # sjtu-sportsd (port 5003) — a ~2200-line monolith:
+                             # ReservationJob, SportsReservationDaemon (scheduler
+                             # + booking logic), create_app (Flask routes) and
+                             # create_dashboard_html (inline HTML) all in one file
 data/                       # runtime (gitignored): sessions/, job JSON, logs
 research/                   # reverse-engineering notes (sports, questionnaire)
 ```
@@ -113,11 +106,10 @@ only, never committed).
 order payloads (constants `SPORTS_CLIENT_ID`, `SPORTS_PUBLIC_KEY`),
 cookie export/clone for reservation racing, slot ranking, slider-captcha
 handling, and both `target_date` and `cron` preview builders. The daemon
-(daemons/sports/) is composed via mixins
-(`SportsJobManagementMixin`, `SportsCatalogMixin`, `SportsBookingRunnerMixin`)
-onto `SportsReservationDaemon`. Behavior constants (retry interval, burst
-window, warmup time) live in `daemons/sports/constants.py` — tune there, not
-inline.
+(`daemons/sports_server.py`) drives it with `SportsReservationDaemon`
+(scheduler + noon warmup + booking retry burst). Behavior constants
+(retry interval, burst window, warmup time) are module-level constants in
+`sports_server.py` — tune there, not inline.
 
 ### Daemons
 
@@ -131,9 +123,9 @@ notifications through `DaemonNotificationClient`
 (sjtusuite/notifications/daemon.py), which wraps ntfy (and optionally SMTP)
 configured via the `notifications` block of `credentials.json`.
 
-`daemons/sports_server.py` is a compatibility shim re-exporting from
-`daemons/sports/`. If you move things, keep the shim or update
-`pyproject.toml` `[project.scripts]`.
+The sports daemon entry point is `daemons.sports_server:main` (see
+`pyproject.toml` `[project.scripts]`). If you reorganize it, update that
+entry point and keep `create_app()` importable.
 
 ### Credentials
 
